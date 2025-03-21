@@ -41,7 +41,7 @@ export const EegRenderer = React.memo(function EegRenderer({
   config,
   latestTimestampRef,
   debugInfoRef,
-  voltageScaleFactor = 5.0
+  voltageScaleFactor = 4
 }: EegRendererProps) {
   const reglRef = useRef<any>(null);
   const pointsArraysRef = useRef<Float32Array[]>([]);
@@ -244,10 +244,11 @@ export const EegRenderer = React.memo(function EegRenderer({
       // Horizontal voltage lines for each channel
       const channelCount = config?.channels?.length || 4;
       for (let ch = 0; ch < channelCount; ch++) {
-        // Use a linear distribution from top to bottom
-        let chOffset = channelCount <= 1
-          ? 0
-          : -0.9 + (ch / (channelCount - 1)) * 1.8;
+        // Channel placement algorithm: (ch_num / (n_channels + 1)) * 100 (% from top)
+        // Convert to percentage from top (ch+1 because channels start at 1)
+        const percentFromTop = ((ch + 1) / (channelCount + 1)) * 100;
+        // Convert percentage to WebGL y-coordinate (1 at top, -1 at bottom)
+        let chOffset = 1.0 - (percentFromTop / 50.0);
         
         VOLTAGE_TICKS.forEach(voltage => {
           // Normalize voltage to [-1, 1] range within channel space
@@ -395,11 +396,11 @@ export const EegRenderer = React.memo(function EegRenderer({
         // Always draw the channel data if we have points, regardless of render offset
         // This ensures continuous rendering as long as there's data in the buffer
         if (count > 0) {
-          // Use the same linear distribution as the grid lines
-          // This ensures consistent spacing between grid lines and EEG data
-          const yOffset = channelCount <= 1
-            ? 0
-            : -0.9 + (ch / (channelCount - 1)) * 1.8;
+          // Channel placement algorithm: (ch_num / (n_channels + 1)) * 100 (% from top)
+          // Convert to percentage from top (ch+1 because channels start at 1)
+          const percentFromTop = ((ch + 1) / (channelCount + 1)) * 100;
+          // Convert percentage to WebGL y-coordinate (1 at top, -1 at bottom)
+          const yOffset = 1.0 - (percentFromTop / 50.0);
           // Check if we might exceed buffer bounds and log warning
           const pointsLength = points.length;
           const neededLength = count * 2;
@@ -419,7 +420,9 @@ export const EegRenderer = React.memo(function EegRenderer({
             count: safeCount,
             color: getChannelColor(ch),
             yOffset: yOffset,
-            yScale: Math.min(0.1, 0.3 / channelCount) * voltageScaleFactor // Scale based on channel count and user-defined scale factor
+            // Max channel height equation: 100 / (n_channels + 1) (% of total height)
+            // Convert percentage to WebGL scale factor and apply user voltage scaling
+            yScale: (100 / (channelCount + 1) / 50) * voltageScaleFactor
           });
           
           // Log rendering status in development mode more frequently

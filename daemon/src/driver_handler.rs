@@ -304,7 +304,7 @@ pub async fn process_eeg_data(
             println!("Processing rate: {:.2} Hz", rate);
             println!("Total samples processed: {}", count);
             println!("Sample data (first 5 values from first channel):");
-            println!("  Channel 0: {:?}", &data.processed_voltage_samples[0][..5]);
+            println!("  1st Channel {:?}", &data.processed_voltage_samples[0]);
             last_time = std::time::Instant::now();
         }
     }

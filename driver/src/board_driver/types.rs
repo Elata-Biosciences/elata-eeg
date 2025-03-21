@@ -6,6 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
+use log::{info, warn, debug, trace, error};
 use super::mock_driver::MockDriver;
 
 // Driver events
@@ -133,21 +134,39 @@ pub async fn create_driver(config: AdcConfig)
     -> Result<(Box<dyn AdcDriver>, mpsc::Receiver<DriverEvent>), DriverError> {
     
     match config.board_driver {
-        // DriverType::Ads1299 => {
-        //     // Create the ADS1299 hardware driver
-        //     let (driver, events) = crate::adc::ads1299_driver::Ads1299Driver::new(config).map_err(|e| DriverError::Other(e.to_string()))?;
-            
-        //     // Check if the driver is in error state after creation
-        //     if driver.get_status() == DriverStatus::Error {
-        //         return Err(DriverError::HardwareNotFound("Failed to initialize ADS1299 hardware".to_string()));
-        //     }
-            
-        //     Ok((Box::new(driver), events))
-        // },
         DriverType::Ads1299 => {
-            panic!("no Ads1299 drver yet")
-        }
+            // Try to create the ADS1299 hardware driver
+            match super::ads1299_driver::Ads1299Driver::new(config.clone(), 0) {
+                Ok((driver, events)) => {
+                    // Check if the driver is in error state after creation
+                    if driver.get_status().await == DriverStatus::Error {
+                        error!("ADS1299 driver is in error state after creation");
+                        error!("Falling back to mock driver");
+                        
+                        // Fall back to mock driver
+                        let mut mock_config = config.clone();
+                        mock_config.board_driver = DriverType::Mock;
+                        let (mock_driver, mock_events) = super::mock_driver::MockDriver::new(mock_config, 0)?;
+                        Ok((Box::new(mock_driver), mock_events))
+                    } else {
+                        info!("ADS1299 driver created successfully");
+                        Ok((Box::new(driver), events))
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to create ADS1299 driver: {}", e);
+                    error!("Falling back to mock driver");
+                    
+                    // Fall back to mock driver
+                    let mut mock_config = config.clone();
+                    mock_config.board_driver = DriverType::Mock;
+                    let (mock_driver, mock_events) = super::mock_driver::MockDriver::new(mock_config, 0)?;
+                    Ok((Box::new(mock_driver), mock_events))
+                }
+            }
+        },
         DriverType::Mock => {
+            info!("Creating mock driver");
             let (driver, events) = super::mock_driver::MockDriver::new(config, 0)?;
             Ok((Box::new(driver), events))
         }

@@ -5,8 +5,8 @@ use tokio::time::{sleep, Duration};
 use async_trait::async_trait;
 use log::{info, warn, debug, trace, error};
 use lazy_static::lazy_static;
-use super::types::{AdcConfig, AdcData, DriverStatus, DriverError, DriverEvent, DriverType};
-use super::mock_data_generator::{gen_eeg_sinusoid_data, gen_realistic_eeg_data, current_timestamp_micros};
+use super::types::{AdcConfig, DriverStatus, DriverError, DriverEvent, DriverType};
+use super::mock_data_generator::{gen_realistic_eeg_data, current_timestamp_micros};
 
 // Static hardware lock to simulate real hardware access constraints
 lazy_static! {

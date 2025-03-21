@@ -1,7 +1,6 @@
 use std::f32::consts::PI;
-use std::collections::HashMap;
 use rand::Rng;
-use log::{debug, trace, error};
+use log::{debug, trace};
 use lazy_static::lazy_static;
 use super::types::{AdcConfig, AdcData, DriverError};
 
