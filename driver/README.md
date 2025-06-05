@@ -2,17 +2,11 @@ TL;DR: This..
 
 ## Simple Description
 This..
-ads1299_sample_voltage = raw_sample * vref / gain / 2**23
 
 ## Behavior
 - Reconfiguration: No dynamic reconfiguration. Reconfigure by shutdown then destruct obj
 - Sample time: Based on the ADC clock. First sample comes from the Pi 5
-- Clock drift: Estimated to be ~1.8s per hour on ADS1299
-
 ## Sample Code
-
-## TODO
-- Does putting filtering in the daemon make more sense? Just pass raw from the driver
 
 ## Basic Usage
 ```rust

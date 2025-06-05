@@ -1,4 +1,4 @@
-mod board_driver;
+mod board_drivers;
 
 use tokio;
 use std::error::Error;
@@ -33,8 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         board_driver: if args.mock { DriverType::Mock } else { DriverType::Ads1299 },
         batch_size: 4,
         Vref: 4.5,
-        dsp_high_pass_cutoff_hz: 0.1,  // Default high-pass filter cutoff (Hz)
-        dsp_low_pass_cutoff_hz: 100.0, // Default low-pass filter cutoff (Hz)
+        // Note: DSP filter parameters will be added to AdcConfig in future optimization
     };
 
     // Create the EEG system

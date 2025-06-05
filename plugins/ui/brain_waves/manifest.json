@@ -1,0 +1,9 @@
+{
+  "id": "brain_waves_fft_applet",
+  "version": "0.1.0",
+  "name": "Brain Waves FFT (Backend Dev)",
+  "description": "Displays real-time brain wave activity using spectral analysis. Backend development version.",
+  "dsp": "brain_waves_fft",
+  "dspWebSocketPath": "/applet/brain_waves/data",
+  "requiredKioskApiVersion": "1.0.0"
+}

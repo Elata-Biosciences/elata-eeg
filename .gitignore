@@ -21,3 +21,7 @@ Cargo.lock
 #.idea/
 
 .install_manifest.json
+
+.ipynb*
+__pycache__*
+.ipynb_checkpoints*

@@ -1,0 +1,18 @@
+{
+  "name": "@eeg-plugins/brain-waves",
+  "version": "0.1.0",
+  "private": true,
+  "main": "ui/BrainWavesDisplay.tsx",
+  "types": "ui/BrainWavesDisplay.tsx",
+  "scripts": {
+    "build": "echo 'No build step for applet currently'"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "webgl-plot": "^0.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20"
+  }
+}

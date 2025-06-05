@@ -4,12 +4,14 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/your/adc_daemon
-Restart=always
+ExecStart=/usr/local/bin/eeg_daemon
+PIDFile=/var/run/eeg_daemon.pid
+Restart=on-failure
 RestartSec=5
-User=your_user
-WorkingDirectory=/path/to/working/directory
+User=elata
+WorkingDirectory=/home/elata/elata-eeg/daemon
 Environment="RUST_LOG=info"
+ExecStopPost=/bin/rm -f /var/run/eeg_daemon.pid
 
 [Install]
 WantedBy=multi-user.target

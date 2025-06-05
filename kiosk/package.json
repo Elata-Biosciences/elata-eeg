@@ -15,16 +15,17 @@
     "@visx/shape": "^3.12.0",
     "@visx/vendor": "^3.12.0",
     "lodash.throttle": "^4.1.1",
-    "next": "15.2.1",
+    "next": "15.3.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "regl": "^2.1.1"
+    "regl": "^2.1.1",
+    "webgl-plot": "^0.7.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

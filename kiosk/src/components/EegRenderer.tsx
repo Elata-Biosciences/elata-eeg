@@ -1,30 +1,16 @@
 'use client';
 
-/**
- * EegRenderer.tsx
- *
- * This component handles rendering EEG data using WebGL for efficient visualization.
- *
- * This implementation uses a Time-Based Rendering approach, which:
- * 1. Assigns each sample a specific index position
- * 2. Determines x-position based on the sample's index, not time
- * 3. Shifts the graph based on actual elapsed time between frames
- * 4. Eliminates drift by accounting for actual frame timing
- *
- * The render offset is expressed as a percentage of canvas width, allowing
- * for smooth scrolling that's consistent regardless of screen dimensions or
- * frame rate fluctuations.
- */
-
-import React, { useEffect, useRef } from 'react';
-import REGL from 'regl';
-import { ScrollingBuffer } from '../utils/ScrollingBuffer';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
+// Keep ColorRGBA for potential future use or if setLineColor gets fixed
+/* eslint-disable @typescript-eslint/ban-ts-comment */
+// @ts-ignore: WebglLine is missing from types but exists at runtime
+import { WebglPlot, ColorRGBA, WebglStep } from 'webgl-plot';
+// Import getChannelColor for setting colors here
 import { getChannelColor } from '../utils/colorUtils';
-import { VOLTAGE_TICKS, TIME_TICKS, WINDOW_DURATION, DEFAULT_SAMPLE_RATE } from '../utils/eegConstants';
 
 interface EegRendererProps {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  dataRef: React.MutableRefObject<ScrollingBuffer[]>;
+  dataRef: React.RefObject<any>; // Re-added as required prop
   config: any;
   latestTimestampRef: React.MutableRefObject<number>;
   debugInfoRef: React.MutableRefObject<{
@@ -32,454 +18,238 @@ interface EegRendererProps {
     packetsReceived: number;
     samplesProcessed: number;
   }>;
-  voltageScaleFactor?: number; // Default to 1.0 if not provided
+  // containerRef is no longer needed here, dimensions are passed directly
+  linesReady: boolean; // Add prop to signal when lines are ready
+  dataVersion: number; // Add prop to track data updates
+  targetFps?: number; // Optional target FPS for rendering
+  containerWidth: number; // New prop for container width
+  containerHeight: number; // New prop for container height
 }
 
 export const EegRenderer = React.memo(function EegRenderer({
   canvasRef,
-  dataRef,
+  dataRef, // Add dataRef prop here
   config,
   latestTimestampRef,
   debugInfoRef,
-  voltageScaleFactor = 4600
+  // containerRef, // Removed
+  linesReady, // Destructure linesReady
+  dataVersion, // Destructure dataVersion
+  targetFps,
+  containerWidth, // Destructure new prop
+  containerHeight // Destructure new prop
 }: EegRendererProps) {
-  const reglRef = useRef<any>(null);
-  const pointsArraysRef = useRef<Float32Array[]>([]);
-  const lastFrameTimeRef = useRef(Date.now());
-  const frameCountRef = useRef(0);
-  const lastFpsLogTimeRef = useRef(Date.now());
-  const canvasDimensionsRef = useRef({ width: 0, height: 0 });
-  const isProduction = process.env.NODE_ENV === 'production';
+  const wglpRef = useRef<WebglPlot | null>(null);
+  // Array of WebglStep instances, one per channel
+  // const linesRef = useRef<WebglStep[] | null>(null); // Removed - Use dataRef prop instead
+  const animationFrameRef = useRef<number | null>(null);
+  const isInitializedRef = useRef<boolean>(false);
+  // const [canvasSized, setCanvasSized] = useState<boolean>(false); // Removed - use containerWidth/Height props
+  // Removed wglpInstance state, reverting to refs
+  // Last data chunk timestamps per channel
+  const lastDataChunkTimeRef = useRef<number[]>([]);
+  const lastRenderTimeRef = useRef<number>(0); // For FPS throttling
 
-  // Track canvas dimensions to detect changes
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    
-    const updateDimensions = () => {
-      if (canvasRef.current) {
-        const { width, height } = canvasRef.current;
-        
-        // Only update if dimensions have changed
-        if (width !== canvasDimensionsRef.current.width || 
-            height !== canvasDimensionsRef.current.height) {
-          
-          canvasDimensionsRef.current = { width, height };
-          
-          if (!isProduction) {
-            console.log(`Canvas dimensions changed: ${width}x${height}`);
-          }
-        }
+  const numChannels = config?.channels?.length ?? 8;
+
+  // Render loop using single WebglLineRoll with addPoints
+  const renderLoop = useCallback(() => {
+    animationFrameRef.current = requestAnimationFrame(renderLoop); // Request next frame immediately
+
+    if (!wglpRef.current || !dataRef.current || !isInitializedRef.current || numChannels === 0) { // Use dataRef
+      return;
+    }
+  
+    const wglp = wglpRef.current;
+    const lines = dataRef.current; // Use dataRef
+    const now = performance.now();
+  
+    // FPS Throttling Logic
+    if (targetFps && targetFps > 0) {
+      const frameInterval = 1000 / targetFps;
+      const elapsed = now - lastRenderTimeRef.current;
+
+      if (elapsed < frameInterval) {
+        return; // Skip this frame
       }
-    };
+      lastRenderTimeRef.current = now - (elapsed % frameInterval); // Adjust for consistent timing
+    } else {
+      // No FPS target, or invalid target, render as fast as possible (synced with rAF)
+      lastRenderTimeRef.current = now;
+    }
+
+    // The following loop for offsetX is not strictly needed for wglp.update()
+    // but kept if any per-line logic might be re-introduced.
+    // If it's purely for wglp.update(), it can be removed.
+    for (let ch = 0; ch < numChannels; ch++) {
+      const line = lines[ch];
+      if (!line || line.numPoints === 0) continue; // Skip if line missing or has no points
+      // No need to set offsetX here anymore
+    }
+  
+    wglp.update();
+  
+  }, [numChannels, config, targetFps, dataRef, isInitializedRef]);
+
+
+  // Effect 1: Initialize WebGL Plot when canvas is ready and sized
+  useEffect(() => {
+    // Skip if plot already exists, canvas missing, or container dimensions are not valid
+    const validDimensions = containerWidth > 0 && containerHeight > 0;
+    if (wglpRef.current || !canvasRef.current || !validDimensions || numChannels === 0) {
+      console.log(`[EegRenderer InitEffect1] Skipping plot creation (Plot Exists: ${!!wglpRef.current}, Canvas: ${!!canvasRef.current}, ValidDimensions: ${validDimensions} [${containerWidth}x${containerHeight}], Channels: ${numChannels}).`);
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    // Explicitly size the canvas using current props BEFORE initializing WebglPlot
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = containerWidth;
+    const cssHeight = containerHeight; // Or a fraction if EegMonitor calculates it for aspect ratio
+
+    const physicalWidth = Math.round(cssWidth * dpr);
+    const physicalHeight = Math.round(cssHeight * dpr);
+
+    // Check if canvas actually needs resizing before applying.
+    // This ensures that if the effect re-runs due to other dependency changes
+    // but the size is already correct, we don't unnecessarily manipulate the DOM.
+    if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
+      console.log(`[EegRenderer InitEffect1] Sizing canvas for initialization: ${cssWidth}x${cssHeight} (CSS), ${physicalWidth}x${physicalHeight} (Physical), DPR: ${dpr}`);
+      canvas.width = physicalWidth;
+      canvas.height = physicalHeight;
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+    } else {
+      console.log(`[EegRenderer InitEffect1] Canvas already correctly sized for initialization: ${cssWidth}x${cssHeight} (CSS), ${physicalWidth}x${physicalHeight} (Physical), DPR: ${dpr}`);
+    }
     
-    // Initial update
-    updateDimensions();
-    
-    // Create observer to detect canvas resize
-    const observer = new ResizeObserver(() => {
-      updateDimensions();
-    });
-    
-    observer.observe(canvasRef.current);
-    
+    console.log("[EegRenderer InitEffect1] Initializing WebGL Plot instance (after explicit sizing)...");
+
+    try {
+      const wglp = new WebglPlot(canvas);
+      wglpRef.current = wglp; // Store in ref
+
+      wglp.gScaleX = 1;
+      wglp.gScaleY = 1;
+
+      isInitializedRef.current = true; // Mark plot as initialized using ref
+      console.log(`[EegRenderer InitEffect1] WebGL Plot initialized.`);
+
+      // Start render loop AFTER initialization
+      if (!animationFrameRef.current) {
+          animationFrameRef.current = requestAnimationFrame(renderLoop);
+          console.log(`[EegRenderer InitEffect1] Render loop started.`);
+      }
+
+    } catch (error) {
+      console.error("[EegRenderer InitEffect1] Error initializing WebGL Plot:", error);
+      wglpRef.current = null;
+      isInitializedRef.current = false; // Reset ref on error
+    }
+
+    // Cleanup for THIS effect (plot creation)
     return () => {
-      if (canvasRef.current) {
-        observer.unobserve(canvasRef.current);
+      console.log("[EegRenderer InitEffect1] Cleaning up WebGL Plot instance...");
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
       }
-      observer.disconnect();
+      wglpRef.current = null; // Clear ref on cleanup
+      isInitializedRef.current = false; // Reset ref on cleanup
+      console.log("[EegRenderer InitEffect1] Plot instance cleanup complete.");
     };
-  }, [canvasRef, isProduction]);
+    // Depend on canvasRef, numChannels, containerWidth, containerHeight, and renderLoop
+  }, [canvasRef, numChannels, containerWidth, containerHeight, renderLoop]);
 
-  // Pre-allocate point arrays for each channel to avoid GC
+
+  // Effect 2: Add/Update lines when they are ready AND plot is initialized
   useEffect(() => {
-    // Use channel count from config or default to 4
-    const channelCount = config?.channels?.length || 4;
-    
-    // Get buffer capacity from the first buffer or calculate from sample rate
-    const bufferCapacity = dataRef.current[0]?.getCapacity() || 
-                          Math.ceil(((config?.sample_rate || 250) * WINDOW_DURATION) / 1000);
-    
-    // Only recreate arrays if needed (channel count changed or not initialized or capacity changed)
-    const needsUpdate = 
-      pointsArraysRef.current.length !== channelCount ||
-      (pointsArraysRef.current.length > 0 && pointsArraysRef.current[0].length < bufferCapacity * 2);
-    
-    if (needsUpdate) {
-      // Allocate enough space for all points (x,y pairs)
-      pointsArraysRef.current = Array(channelCount).fill(null).map(() =>
-        new Float32Array(bufferCapacity * 2)
-      );
-      
-      if (!isProduction) {
-        console.log(`Initialized ${channelCount} point arrays with capacity ${bufferCapacity}`);
-      }
-    }
-  }, [config, dataRef, isProduction]);
+    // Use wglpRef
+    const wglp = wglpRef.current;
 
-  // WebGL setup
+    // Only proceed if plot is initialized (via ref) AND plot exists AND lines are ready
+    if (!isInitializedRef.current || !wglp || !linesReady) {
+        // console.log(`[EegRenderer InitEffect2] Skipping line addition (Initialized: ${isInitializedRef.current}, Plot Exists: ${!!wglp}, LinesReady: ${linesReady})`);
+        return;
+    }
+
+    // Check if dataRef has lines
+    const lines = dataRef.current;
+    if (!lines || lines.length === 0) {
+        console.warn("[EegRenderer InitEffect2] Lines are ready, but dataRef is empty. Cannot add lines.");
+        return;
+    }
+
+    console.log(`[EegRenderer InitEffect2] Adding/Updating ${lines.length} lines.`);
+
+    // Clear existing lines before adding new ones - IMPORTANT
+    // Assuming webgl-plot doesn't have a dedicated clear, we might need to remove lines individually
+    // or manage the lines array internally. For now, let's re-add, assuming addLine handles it.
+    // A better approach might involve checking if a line instance is already added.
+
+    lines.forEach((line: WebglStep, i: number) => {
+      if (line) {
+        try {
+          const colorTuple = getChannelColor(i);
+          line.color = new ColorRGBA(colorTuple[0], colorTuple[1], colorTuple[2], 1);
+        } catch (error) {
+          console.error(`[EegRenderer InitEffect2] Ch ${i}: Error setting color:`, error);
+          line.color = new ColorRGBA(1, 1, 1, 1); // fallback white
+        }
+        try {
+            (wglp as any).addLine(line);
+        } catch(addError) {
+            console.error(`[EegRenderer InitEffect2] Ch ${i}: Error adding line:`, addError, line);
+        }
+      } else {
+          console.warn(`[EegRenderer InitEffect2] Ch ${i}: Line instance is null or undefined in dataRef.`);
+      }
+    });
+
+    console.log(`[EegRenderer InitEffect2] Lines added/updated.`);
+    wglp.update(); // Update plot after adding/updating lines
+
+    // No cleanup needed specifically for adding lines, Effect 1 handles plot cleanup.
+
+  // Depend on plot initialization state, lines readiness state, and the actual dataRef content
+  // Check isInitializedRef.current inside, depend on linesReady and dataVersion
+  }, [linesReady, dataVersion]);
+
+
+  // Resize Effect: Now depends on containerWidth and containerHeight props
   useEffect(() => {
-    if (!canvasRef.current) return;
-    
-    if (!isProduction) {
-      console.log("Initializing WebGL renderer");
+    if (!canvasRef.current || containerWidth === 0 || containerHeight === 0) {
+      // console.log(`[EegRenderer ResizeEffect] Skipping resize: Canvas: ${!!canvasRef.current}, ContainerDims: ${containerWidth}x${containerHeight}`);
+      return;
     }
-    
-    // Initialize regl
-    const regl = REGL({
-      canvas: canvasRef.current,
-      attributes: {
-        antialias: false,
-        depth: false,
-        preserveDrawingBuffer: true
-      }
-    });
-    
-    reglRef.current = regl;
-    
-    // Get FPS from config with no fallback
-    const renderFps = config?.fps || 0;
-    
-    if (!isProduction) {
-      console.log(`Setting render FPS to ${renderFps}`);
-    }
-    
-    // Create WebGL command for drawing the grid
-    const drawGrid = regl({
-      frag: `
-        precision mediump float;
-        uniform vec4 color;
-        void main() {
-          gl_FragColor = color;
-        }
-      `,
-      vert: `
-        precision mediump float;
-        attribute vec2 position;
-        void main() {
-          gl_Position = vec4(position, 0, 1);
-        }
-      `,
-      attributes: {
-        position: regl.prop('points')
-      },
-      uniforms: {
-        color: regl.prop('color')
-      },
-      primitive: 'lines',
-      count: regl.prop('count'), // Add count property
-      blend: {
-        enable: true,
-        func: {
-          srcRGB: 'src alpha',
-          srcAlpha: 1,
-          dstRGB: 'one minus src alpha',
-          dstAlpha: 1
-        }
-      },
-      depth: { enable: false }
-    });
-    
-    // Create WebGL command for drawing the EEG lines
-    const drawLines = regl({
-      frag: `
-        precision mediump float;
-        uniform vec4 color;
-        void main() {
-          gl_FragColor = color;
-        }
-      `,
-      vert: `
-        precision mediump float;
-        attribute vec2 position;
-        uniform float yOffset;
-        uniform float yScale;
-        void main() {
-          // Convert x from [0,1] to [-1,1] (right to left, traditional EEG style)
-          // Map 0 to 1 (left of screen) and 1 to -1 (right of screen)
-          float x = 1.0 - position.x * 2.0;
-          
-          // Scale y value and apply offset
-          // Convert from [min,max] to [-1,1] with channel offset
-          float y = position.y * yScale + yOffset;
-          
-          gl_Position = vec4(x, y, 0, 1);
-        }
-      `,
-      attributes: {
-        position: regl.prop('points')
-      },
-      uniforms: {
-        color: regl.prop('color'),
-        yOffset: regl.prop('yOffset'),
-        yScale: regl.prop('yScale')
-      },
-      primitive: 'line strip',
-      lineWidth: 1.0, // Minimum allowed line width in REGL (must be between 1 and 32)
-      count: regl.prop('count'),
-      blend: {
-        enable: true,
-        func: {
-          srcRGB: 'src alpha',
-          srcAlpha: 1,
-          dstRGB: 'one minus src alpha',
-          dstAlpha: 1
-        }
-      },
-      depth: { enable: false }
-    });
-    
-    // Function to create grid lines
-    const createGridLines = () => {
-      const gridLines: number[][] = [];
-      
-      // Vertical time lines
-      TIME_TICKS.forEach(time => {
-        const x = 1.0 - (time / (WINDOW_DURATION / 1000));
-        gridLines.push(
-          [x * 2 - 1, -1], // Bottom
-          [x * 2 - 1, 1]   // Top
-        );
-      });
-      
-      // Horizontal voltage lines for each channel
-      const channelCount = config?.channels?.length || 4;
-      for (let ch = 0; ch < channelCount; ch++) {
-        // Channel placement algorithm: (ch_num / (n_channels + 1)) * 100 (% from top)
-        // Convert to percentage from top (ch+1 because channels start at 1)
-        const percentFromTop = ((ch + 1) / (channelCount + 1)) * 100;
-        // Convert percentage to WebGL y-coordinate (1 at top, -1 at bottom)
-        let chOffset = 1.0 - (percentFromTop / 50.0);
-        
-        VOLTAGE_TICKS.forEach(voltage => {
-          // Normalize voltage to [-1, 1] range within channel space
-          // Scale based on channel count to prevent overlap with many channels
-          const baseScaleFactor = Math.min(0.1, 0.3 / channelCount);
-          const scaleFactor = baseScaleFactor * voltageScaleFactor;
-          const normalizedVoltage = (voltage / 3) * scaleFactor;
-          const y = chOffset + normalizedVoltage;
-          
-          gridLines.push(
-            [-1, y], // Left
-            [1, y]   // Right
-          );
-        });
-      }
-      
-      return gridLines;
-    };
-    
-    // Create initial grid lines
-    const gridLines = createGridLines();
-    
-    // Render function with time-based scrolling
-    const render = () => {
-      // Get current time for logging and other operations
-      const now = Date.now();
-      
-      // Calculate delta time for time-based scrolling
-      // This is the key to smooth scrolling - we use the actual elapsed time
-      // rather than assuming a fixed frame rate
-      const deltaTime = (now - lastFrameTimeRef.current) / 1000; // in seconds
-      lastFrameTimeRef.current = now;
-      
-      // Increment frame counter for FPS calculation
-      frameCountRef.current++;
-      
-      // Calculate and log actual FPS every second
-      if (now - lastFpsLogTimeRef.current > 1000) {
-        const elapsedSec = (now - lastFpsLogTimeRef.current) / 1000;
-        const actualFps = frameCountRef.current / elapsedSec;
-        console.log(`Actual render FPS: ${actualFps.toFixed(2)} (${frameCountRef.current} frames in ${elapsedSec.toFixed(2)}s)`);
-        frameCountRef.current = 0;
-        lastFpsLogTimeRef.current = now;
-      }
-      
-      // Debug: Log render call more frequently during development
-      if (!isProduction && Math.random() < 0.05) {
-        console.log(`Render function called at ${new Date(now).toISOString()}, dt=${deltaTime.toFixed(4)}s`);
-      }
-      
-      // Get sample rate from config or use default
-      const sampleRate = config?.sample_rate || DEFAULT_SAMPLE_RATE;
-      
-      // Update render offsets in all buffers using time-based approach
-      // This shifts the graph left based on actual elapsed time
-      // The renderOffset is maintained when new data arrives for smooth animation
-      const channelCount = config?.channels?.length || 4;
-      
-      // Log the time-based approach more frequently during development
-      if (!isProduction && Math.random() < 0.1) {
-        console.log(`Time-based scrolling: dt=${deltaTime.toFixed(4)}s, expected samples shift: ${(sampleRate * deltaTime).toFixed(2)}`);
-      }
-      
-      for (let ch = 0; ch < channelCount; ch++) {
-        if (dataRef.current[ch]) {
-          // Update sample rate in buffer if needed
-          if (dataRef.current[ch].getSampleRate() !== sampleRate) {
-            dataRef.current[ch].setSampleRate(sampleRate);
-          }
-          
-          // No need to update render offset here as it's calculated on-demand
-          // Log renderOffset occasionally for debugging
-          if (!isProduction && ch === 0 && Math.random() < 0.05) {
-            console.log(`Current renderOffset for channel ${ch}: ${dataRef.current[ch].getRenderOffset().toFixed(2)}, dt=${deltaTime.toFixed(4)}s`);
-          }
-        }
-      }
-      
-      // Use a relative time window based on the latest data timestamp
-      const latestTimestamp = latestTimestampRef.current;
-      const startTime = latestTimestamp - WINDOW_DURATION;
-      const endTime = latestTimestamp;
-      const debugInfo = debugInfoRef.current;
-      
-      // Only log in development mode and very infrequently
-      if (!isProduction && Math.random() < 0.01) {
-        console.log(`Time window: ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()}`);
-        console.log(`Sample rate: ${sampleRate} Hz, time-based scrolling active`);
-        
-        // Log buffer and renderOffset status for each channel
-        for (let ch = 0; ch < channelCount; ch++) {
-          if (dataRef.current[ch]) {
-            const buffer = dataRef.current[ch];
-            const renderOffset = buffer.getRenderOffset();
-            console.log(`Channel ${ch}: renderOffset=${renderOffset.toFixed(2)}, bufferSize=${buffer.getSize()}, capacity=${buffer.getCapacity()}`);
-          }
-        }
-      }
-      
-      // Clear the canvas
-      regl.clear({
-        color: [0.1, 0.1, 0.2, 1],
-        depth: 1
-      });
-      
-      // Draw grid
-      drawGrid({
-        points: gridLines,
-        color: [0.2, 0.2, 0.2, 0.8],
-        count: gridLines.length
-      });
-      
-      // Track if any data was drawn
-      let totalPointsDrawn = 0;
-      
-      // Draw each channel - always draw all channels together
-      for (let ch = 0; ch < channelCount; ch++) {
-        if (!dataRef.current[ch]) continue;
-        const buffer = dataRef.current[ch];
-        
-        // Ensure point arrays are large enough
-        if (ch >= pointsArraysRef.current.length || 
-            pointsArraysRef.current[ch].length < buffer.getCapacity() * 2) {
-          // Reallocate this channel's points array
-          pointsArraysRef.current[ch] = new Float32Array(buffer.getCapacity() * 2);
-          if (!isProduction) {
-            console.log(`Reallocated points array for channel ${ch} with capacity ${buffer.getCapacity()}`);
-          }
-        }
-        
-        const points = pointsArraysRef.current[ch];
-        
-        // Get data points for this channel
-        const count = buffer.getData(points);
-        totalPointsDrawn += count;
-        
-        // Minimal logging in production
-        if (!isProduction && ch === 0 && debugInfo.packetsReceived > 0 && now - debugInfo.lastPacketTime > 2000) {
-          console.log(`Channel ${ch}: ${count} points`);
-        }
-        
-        // Get the render offset for logging
-        const renderOffset = buffer.getRenderOffset();
-        
-        // Always draw the channel data if we have points, regardless of render offset
-        // This ensures continuous rendering as long as there's data in the buffer
-        if (count > 0) {
-          // Channel placement algorithm: (ch_num / (n_channels + 1)) * 100 (% from top)
-          // Convert to percentage from top (ch+1 because channels start at 1)
-          const percentFromTop = ((ch + 1) / (channelCount + 1)) * 100;
-          // Convert percentage to WebGL y-coordinate (1 at top, -1 at bottom)
-          const yOffset = 1.0 - (percentFromTop / 50.0);
-          // Check if we might exceed buffer bounds and log warning
-          const pointsLength = points.length;
-          const neededLength = count * 2;
-          
-          // Use a safe count to prevent buffer overflow
-          let safeCount = count;
-          
-          if (neededLength > pointsLength) {
-            console.warn(`[EegRenderer] Buffer size issue: channel=${ch}, count=${count}, needed=${neededLength}, available=${pointsLength}`);
-            // Adjust count to prevent buffer overflow
-            safeCount = Math.floor(pointsLength / 2);
-          }
-          
-          // Draw the channel data
-          drawLines({
-            points: points.subarray(0, safeCount * 2),
-            count: safeCount,
-            color: getChannelColor(ch),
-            yOffset: yOffset,
-            // Max channel height equation: 100 / (n_channels + 1) (% of total height)
-            // Convert percentage to WebGL scale factor and apply user voltage scaling
-            yScale: (100 / (channelCount + 1) / 50) * voltageScaleFactor
-          });
-          
-          // Log rendering status in development mode more frequently
-          if (!isProduction && Math.random() < 0.02) {
-            console.log(`Rendering channel ${ch}: renderOffset=${renderOffset.toFixed(2)}, bufferSize=${buffer.getSize()}, count=${count}, using full offset for continuous scrolling`);
-          }
-        } else if (count === 0 && !isProduction && Math.random() < 0.02) {
-          // Log when we're not rendering because there's no data
-          console.log(`No data to render for channel ${ch}: bufferSize=${buffer.getSize()}, renderOffset=${renderOffset.toFixed(2)}`);
-        }
-      }
-      
-      // Log data status every 2 seconds in development mode
-      if (!isProduction && now - debugInfo.lastPacketTime > 2000) {
-        console.log(`Points drawn: ${totalPointsDrawn}, Packets: ${debugInfo.packetsReceived}`);
-        debugInfo.lastPacketTime = now;
-      }
-      
-      // Always log when no points were drawn (potential issue)
-      if (!isProduction && totalPointsDrawn === 0 && Math.random() < 0.05) {
-        console.warn(`No points drawn in this frame! Check if data is available.`);
-      }
-    };
-    // Set up rendering with FPS control
-    let animationFrameId: number;
-    let lastRenderTime = 0;
-    
-    const animationLoop = (timestamp: number) => {
-      // Calculate time since last render
-      const elapsed = timestamp - lastRenderTime;
-      
-      // Calculate frame interval based on desired FPS
-      const frameInterval = 1000 / (renderFps || 60); // Default to 60 FPS if not specified
-      
-      // Only render if enough time has elapsed
-      if (elapsed >= frameInterval) {
-        render();
-        lastRenderTime = timestamp - (elapsed % frameInterval); // Adjust for any remainder
-        
-        if (!isProduction && Math.random() < 0.05) {
-          console.log(`Rendering at interval: ${elapsed.toFixed(2)}ms (target: ${frameInterval.toFixed(2)}ms)`);
-        }
-      }
-      
-      // Schedule next frame
-      animationFrameId = requestAnimationFrame(animationLoop);
-    };
-    
-    // Start the animation
-    animationFrameId = requestAnimationFrame(animationLoop);
-    
-    // Clean up
-    return () => {
-      cancelAnimationFrame(animationFrameId);
-      regl.destroy();
-    };
-  }, [canvasRef, config, dataRef, latestTimestampRef, debugInfoRef, voltageScaleFactor]);
 
+    const canvas = canvasRef.current;
+    const dpr = window.devicePixelRatio || 1;
+    
+    // Use containerWidth and containerHeight directly for CSS size
+    const cssWidth = containerWidth;
+    const cssHeight = containerHeight; // Or a fraction if EegMonitor calculates it for aspect ratio
+
+    const physicalWidth = Math.round(cssWidth * dpr);
+    const physicalHeight = Math.round(cssHeight * dpr);
+
+    if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
+      console.log(`[EegRenderer ResizeEffect] Resizing canvas to: ${cssWidth}x${cssHeight} (CSS), ${physicalWidth}x${physicalHeight} (Physical), DPR: ${dpr}`);
+      canvas.width = physicalWidth;
+      canvas.height = physicalHeight;
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+
+      if (wglpRef.current) {
+         wglpRef.current.gScaleY = 1; // Maintain consistent Y scaling
+         console.log(`[EegRenderer ResizeEffect] Kept gScaleY at 1 on resize.`);
+         wglpRef.current.update(); // Update plot after canvas resize
+      }
+    }
+    // No cleanup needed here as we are not using ResizeObserver anymore
+  }, [canvasRef, containerWidth, containerHeight]); // Depend on props
+
+
+  // Component renders nothing itself
   return null;
 });

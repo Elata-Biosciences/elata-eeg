@@ -13,18 +13,19 @@ name = "eeg_driver_bin"
 path = "src/main.rs"
 
 [[bin]]
-name = "minimal_ads1299_test"
-path = "src/minimal_ads1299_test.rs"
+name = "ads1299_test"
+path = "src/board_drivers/ads1299/test.rs"
 
 [dependencies]
 tokio = { version = "1.28.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7.14"
 rand = "0.8"
 libc = "0.2"
 nix = "0.26"
 clap = { version = "4.5", features = ["derive"] } # for passing the mock data flag
 rppal = { version = "0.22.1", features = ["hal"] }
 aligned-utils = "1.0"
-biquad = "0.5"
+# biquad = "0.5" # Removed as per DSP refactor plan
 rustfft = "6.1"
 rand_distr = "0.4"
 thiserror = "1.0"

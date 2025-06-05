@@ -1,0 +1,516 @@
+diff --git a/daemon/src/connection_manager.rs b/daemon/src/connection_manager.rs
+index 33de1fc..d5cbaa5 100644
+--- a/daemon/src/connection_manager.rs
++++ b/daemon/src/connection_manager.rs
+@@ -3,11 +3,42 @@
+ //! This module manages WebSocket connections and maps them to DSP processing requirements,
+ //! enabling demand-based processing that only activates DSP components when needed.
+ 
+-use std::collections::HashMap;
++use std::collections::{HashMap, HashSet};
+ use std::hash::Hash;
+ use std::sync::Arc;
+ use tokio::sync::Mutex;
+-use eeg_driver::dsp::coordinator::{ClientId, DspRequirements, DspCoordinator};
++use eeg_driver::{ClientId, DspRequirements, DspCoordinator};
++
++/// Pipeline types for different data processing streams
++#[derive(Debug, Clone, PartialEq, Eq, Hash)]
++pub enum PipelineType {
++    /// Raw unfiltered data pipeline - /eeg endpoint
++    RawData,
++    /// Basic voltage filtering pipeline - /ws/eeg/data__basic_voltage_filter
++    BasicVoltageFilter,
++    /// FFT analysis pipeline - /applet/brain_waves/data
++    FftAnalysis,
++}
++
++impl PipelineType {
++    /// Get the estimated CPU cost for this pipeline
++    pub fn cpu_cost(&self) -> f32 {
++        match self {
++            PipelineType::RawData => 0.5,           // Minimal processing
++            PipelineType::BasicVoltageFilter => 2.0, // Basic filtering
++            PipelineType::FftAnalysis => 3.0,       // FFT computation
++        }
++    }
++    
++    /// Get the WebSocket endpoint for this pipeline
++    pub fn endpoint(&self) -> &'static str {
++        match self {
++            PipelineType::RawData => "/eeg",
++            PipelineType::BasicVoltageFilter => "/ws/eeg/data__basic_voltage_filter",
++            PipelineType::FftAnalysis => "/applet/brain_waves/data",
++        }
++    }
++}
+ 
+ /// Types of WebSocket clients with different DSP needs
+ #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+@@ -26,6 +57,20 @@ pub enum ClientType {
+     FilteredData,
+ }
+ 
++impl ClientType {
++    /// Map client type to pipeline type
++    pub fn to_pipeline_type(&self) -> Option<PipelineType> {
++        match self {
++            ClientType::EegMonitor => Some(PipelineType::BasicVoltageFilter),
++            ClientType::FftAnalysis => Some(PipelineType::FftAnalysis),
++            ClientType::RawRecording => Some(PipelineType::RawData),
++            ClientType::FilteredData => Some(PipelineType::BasicVoltageFilter),
++            ClientType::Config => None,     // No pipeline needed
++            ClientType::Command => None,    // No pipeline needed
++        }
++    }
++}
++
+ impl ClientType {
+     /// Convert client type to DSP requirements
+     pub fn to_dsp_requirements(&self, channels: Vec<usize>) -> DspRequirements {
+@@ -54,6 +99,10 @@ impl ClientType {
+ pub struct ConnectionManager {
+     /// Active connections mapped to their client types
+     connections: Arc<Mutex<HashMap<ClientId, ClientType>>>,
++    /// Pipeline-specific client tracking for reference counting
++    pipeline_clients: Arc<Mutex<HashMap<PipelineType, HashSet<ClientId>>>>,
++    /// Currently active pipelines
++    active_pipelines: Arc<Mutex<HashSet<PipelineType>>>,
+     /// Reference to the DSP coordinator
+     dsp_coordinator: Arc<Mutex<DspCoordinator>>,
+     /// Default channels for new connections
+@@ -65,6 +114,8 @@ impl ConnectionManager {
+     pub fn new(dsp_coordinator: Arc<Mutex<DspCoordinator>>, default_channels: Vec<usize>) -> Self {
+         Self {
+             connections: Arc::new(Mutex::new(HashMap::new())),
++            pipeline_clients: Arc::new(Mutex::new(HashMap::new())),
++            active_pipelines: Arc::new(Mutex::new(HashSet::new())),
+             dsp_coordinator,
+             default_channels,
+         }
+@@ -150,6 +201,113 @@ impl ConnectionManager {
+         let coordinator = self.dsp_coordinator.lock().await;
+         format!("{:?}", coordinator.get_state())
+     }
++
++    /// Register a client with pipeline-specific tracking
++    pub async fn register_client_pipeline(&self, client_id: ClientId, client_type: ClientType) -> Result<(), String> {
++        println!("ConnectionManager: Registering client {} as {:?}", client_id, client_type);
++        
++        // Add to connections map
++        {
++            let mut connections = self.connections.lock().await;
++            connections.insert(client_id.clone(), client_type.clone());
++        }
++
++        // Check if client needs a pipeline
++        if let Some(pipeline_type) = client_type.to_pipeline_type() {
++            let mut pipeline_clients = self.pipeline_clients.lock().await;
++            let mut active_pipelines = self.active_pipelines.lock().await;
++            
++            // Add client to pipeline group
++            pipeline_clients
++                .entry(pipeline_type.clone())
++                .or_insert_with(HashSet::new)
++                .insert(client_id.clone());
++            
++            // Activate pipeline if first client
++            let was_active = active_pipelines.contains(&pipeline_type);
++            if !was_active {
++                active_pipelines.insert(pipeline_type.clone());
++                println!("ConnectionManager: Activated pipeline {:?}", pipeline_type);
++            }
++        }
++
++        // Register with DSP coordinator if client needs DSP processing
++        let requirements = client_type.to_dsp_requirements(self.default_channels.clone());
++        if requirements.needs_filtering || requirements.needs_fft || requirements.needs_raw {
++            let mut coordinator = self.dsp_coordinator.lock().await;
++            coordinator.register_client(client_id, requirements).await?;
++        }
++
++        Ok(())
++    }
++
++    /// Unregister a client with pipeline-specific tracking
++    pub async fn unregister_client_pipeline(&self, client_id: &ClientId) -> Result<(), String> {
++        println!("ConnectionManager: Unregistering client {}", client_id);
++        
++        // Remove from connections map
++        let client_type = {
++            let mut connections = self.connections.lock().await;
++            connections.remove(client_id)
++        };
++
++        // Handle pipeline cleanup
++        if let Some(client_type) = &client_type {
++            if let Some(pipeline_type) = client_type.to_pipeline_type() {
++                let mut pipeline_clients = self.pipeline_clients.lock().await;
++                let mut active_pipelines = self.active_pipelines.lock().await;
++                
++                // Remove client from pipeline group
++                if let Some(clients) = pipeline_clients.get_mut(&pipeline_type) {
++                    clients.remove(client_id);
++                    
++                    // Deactivate pipeline if no clients remain
++                    if clients.is_empty() {
++                        active_pipelines.remove(&pipeline_type);
++                        pipeline_clients.remove(&pipeline_type);
++                        println!("ConnectionManager: Deactivated pipeline {:?}", pipeline_type);
++                    }
++                }
++            }
++        }
++
++        // Unregister from DSP coordinator if client was using DSP
++        if let Some(client_type) = client_type {
++            let requirements = client_type.to_dsp_requirements(self.default_channels.clone());
++            if requirements.needs_filtering || requirements.needs_fft || requirements.needs_raw {
++                let mut coordinator = self.dsp_coordinator.lock().await;
++                coordinator.unregister_client(client_id).await?;
++            }
++        }
++
++        Ok(())
++    }
++
++    /// Get currently active pipelines
++    pub async fn get_active_pipelines(&self) -> HashSet<PipelineType> {
++        let active_pipelines = self.active_pipelines.lock().await;
++        active_pipelines.clone()
++    }
++
++    /// Get total estimated CPU cost of active pipelines
++    pub async fn get_total_cpu_cost(&self) -> f32 {
++        let active_pipelines = self.active_pipelines.lock().await;
++        active_pipelines.iter().map(|p| p.cpu_cost()).sum()
++    }
++
++    /// Check if any pipelines are active (for idle detection)
++    pub async fn has_active_pipelines(&self) -> bool {
++        let active_pipelines = self.active_pipelines.lock().await;
++        !active_pipelines.is_empty()
++    }
++
++    /// Get pipeline client counts for debugging
++    pub async fn get_pipeline_stats(&self) -> HashMap<PipelineType, usize> {
++        let pipeline_clients = self.pipeline_clients.lock().await;
++        pipeline_clients.iter()
++            .map(|(pipeline, clients)| (pipeline.clone(), clients.len()))
++            .collect()
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/daemon/src/driver_handler.rs b/daemon/src/driver_handler.rs
+index 1009443..506649d 100644
+--- a/daemon/src/driver_handler.rs
++++ b/daemon/src/driver_handler.rs
+@@ -10,6 +10,7 @@ use serde::Serialize;
+ use tokio::sync::Mutex;
+ use tokio_util::sync::CancellationToken;
+ use basic_voltage_filter::SignalProcessor; // Added for Phase 2
++use crate::connection_manager::PipelineType; // For demand-based processing
+ 
+ use crate::config::DaemonConfig;
+ 
+@@ -260,6 +261,7 @@ pub async fn process_eeg_data(
+     tx_to_filtered_data_web_socket: tokio::sync::broadcast::Sender<FilteredEegData>, // For new filtered data endpoint
+     csv_recorder: Arc<Mutex<CsvRecorder>>,
+     _is_recording_shared_status: Arc<AtomicBool>, // Renamed, as direct is_recording check is on recorder
++    connection_manager: Arc<crate::connection_manager::ConnectionManager>, // For demand-based processing
+     cancellation_token: CancellationToken,
+ ) {
+     let mut count = 0;
+@@ -287,6 +289,32 @@ pub async fn process_eeg_data(
+     loop {
+         tokio::select! {
+             Some(data) = rx_data_from_adc.recv() => {
++                // --- DEMAND-BASED PROCESSING CHECK ---
++                // Check if any pipelines are active before processing
++                let has_active_pipelines = connection_manager.has_active_pipelines().await;
++                
++                if !has_active_pipelines {
++                    // IDLE STATE - 0% CPU usage
++                    // Only handle CSV recording if needed, skip all other processing
++                    if let Ok(mut recorder) = csv_recorder.try_lock() {
++                        if recorder.is_recording {
++                            match recorder.write_data(&data).await {
++                                Ok(msg) => {
++                                    if msg != "Data written successfully" && msg != "Not recording" {
++                                        println!("CSV Recording (idle): {}", msg);
++                                    }
++                                },
++                                Err(e) => println!("Warning: Failed to write data to CSV (idle): {}", e),
++                            }
++                        }
++                    }
++                    // Skip all WebSocket processing - no clients connected
++                    continue;
++                }
++                
++                // Get active pipelines for targeted processing
++                let active_pipelines = connection_manager.get_active_pipelines().await;
++                
+                 // --- CSV Recording ---
+                 // Uses data.voltage_samples (which are direct from driver, pre-SignalProcessor)
+                 // and data.raw_samples
+@@ -303,90 +331,92 @@ pub async fn process_eeg_data(
+                     }
+                 }
+ 
+-                // --- Data Processing and Broadcasting ---
++                // --- PIPELINE-AWARE DATA PROCESSING ---
+                 if let Some(error_msg) = &data.error {
+                     println!("Error from EEG system: {}", error_msg);
+                     
+-                    // Send error to existing /eeg endpoint (EegBatchData)
+-                    let error_batch_unfiltered = EegBatchData {
+-                        channels: Vec::new(),
+-                        timestamp: data.timestamp / 1000, // ms
+-                        power_spectrums: None,
+-                        frequency_bins: None,
+-                        error: Some(error_msg.clone()),
+-                    };
+-                    // Suppress warning if no receivers, as it's common if no client is connected
+-                    let _ = tx_to_web_socket.send(error_batch_unfiltered);
++                    // Send error only to active pipelines
++                    if active_pipelines.contains(&PipelineType::RawData) {
++                        let error_batch_unfiltered = EegBatchData {
++                            channels: Vec::new(),
++                            timestamp: data.timestamp / 1000, // ms
++                            power_spectrums: None,
++                            frequency_bins: None,
++                            error: Some(error_msg.clone()),
++                        };
++                        let _ = tx_to_web_socket.send(error_batch_unfiltered);
++                    }
+ 
+-                    // Send error to new filtered data endpoint (FilteredEegData)
+-                    let error_batch_filtered = FilteredEegData {
+-                        timestamp: data.timestamp / 1000, // ms
+-                        raw_samples: None,
+-                        filtered_voltage_samples: None,
+-                        error: Some(error_msg.clone()),
+-                    };
+-                    let _ = tx_to_filtered_data_web_socket.send(error_batch_filtered);
++                    if active_pipelines.contains(&PipelineType::BasicVoltageFilter) {
++                        let error_batch_filtered = FilteredEegData {
++                            timestamp: data.timestamp / 1000, // ms
++                            raw_samples: None,
++                            filtered_voltage_samples: None,
++                            error: Some(error_msg.clone()),
++                        };
++                        let _ = tx_to_filtered_data_web_socket.send(error_batch_filtered);
++                    }
+ 
+                 } else if !data.voltage_samples.is_empty() && !data.voltage_samples[0].is_empty() {
+-                    // --- 1. Process and send UNFILTERED data to existing /eeg endpoint ---
+-                    // This uses data.voltage_samples directly from the driver (Phase 1 output)
+-                    let batch_size_for_unfiltered_ws = daemon_config_clone.batch_size;
+-                    let num_channels_for_unfiltered = data.voltage_samples.len();
+-                    let samples_per_channel_unfiltered = data.voltage_samples[0].len();
++                    // --- PIPELINE-SPECIFIC DATA PROCESSING ---
++                    
++                    // 1. Process RAW DATA pipeline (if active)
++                    if active_pipelines.contains(&PipelineType::RawData) {
++                        let batch_size_for_unfiltered_ws = daemon_config_clone.batch_size;
++                        let num_channels_for_unfiltered = data.voltage_samples.len();
++                        let samples_per_channel_unfiltered = data.voltage_samples[0].len();
+ 
+-                    for chunk_start in (0..samples_per_channel_unfiltered).step_by(batch_size_for_unfiltered_ws) {
+-                        let chunk_end = (chunk_start + batch_size_for_unfiltered_ws).min(samples_per_channel_unfiltered);
+-                        
+-                        // Timestamp for this specific chunk (original timestamp is for the start of the whole `data` block)
+-                        // Assuming sample_rate is available from adc_config_clone
+-                        let us_per_sample = 1_000_000 / adc_config_clone.sample_rate as u64;
+-                        let chunk_timestamp_us = data.timestamp + (chunk_start as u64 * us_per_sample);
++                        for chunk_start in (0..samples_per_channel_unfiltered).step_by(batch_size_for_unfiltered_ws) {
++                            let chunk_end = (chunk_start + batch_size_for_unfiltered_ws).min(samples_per_channel_unfiltered);
++                            
++                            let us_per_sample = 1_000_000 / adc_config_clone.sample_rate as u64;
++                            let chunk_timestamp_us = data.timestamp + (chunk_start as u64 * us_per_sample);
+ 
+-                        let mut chunk_channels_unfiltered = Vec::with_capacity(num_channels_for_unfiltered);
+-                        for channel_samples in &data.voltage_samples {
+-                            chunk_channels_unfiltered.push(channel_samples[chunk_start..chunk_end].to_vec());
++                            let mut chunk_channels_unfiltered = Vec::with_capacity(num_channels_for_unfiltered);
++                            for channel_samples in &data.voltage_samples {
++                                chunk_channels_unfiltered.push(channel_samples[chunk_start..chunk_end].to_vec());
++                            }
++                            
++                            let eeg_batch_data = EegBatchData {
++                                channels: chunk_channels_unfiltered,
++                                timestamp: chunk_timestamp_us / 1000, // Convert to milliseconds
++                                power_spectrums: data.power_spectrums.clone(),
++                                frequency_bins: data.frequency_bins.clone(),
++                                error: None,
++                            };
++                            let _ = tx_to_web_socket.send(eeg_batch_data);
+                         }
+-                        
+-                        let eeg_batch_data = EegBatchData {
+-                            channels: chunk_channels_unfiltered,
+-                            timestamp: chunk_timestamp_us / 1000, // Convert to milliseconds
+-                            power_spectrums: data.power_spectrums.clone(), // Pass through if present
+-                            frequency_bins: data.frequency_bins.clone(),   // Pass through if present
+-                            error: None,
+-                        };
+-                        let _ = tx_to_web_socket.send(eeg_batch_data);
+                     }
+ 
+-                    // --- 2. Apply basic_voltage_filter and send FILTERED data to new endpoint ---
+-                    // Create a mutable copy for in-place filtering
+-                    let mut samples_to_filter = data.voltage_samples.clone();
+-                    
+-                    for (channel_idx, channel_samples_vec) in samples_to_filter.iter_mut().enumerate() {
+-                        // process_chunk expects a mutable slice and processes it in place.
+-                        // It also needs the channel index.
+-                        // Ensure channel_idx is within bounds for the signal_processor's configuration
+-                        if channel_idx < num_channels_usize { // num_channels_usize was derived from adc_config for signal_processor init
+-                            // Create a copy of the input samples for processing
+-                            let input_samples = channel_samples_vec.clone();
+-                            match signal_processor.process_chunk(channel_idx, &input_samples, channel_samples_vec.as_mut_slice()) {
+-                                Ok(_) => {} // Successfully processed
+-                                Err(e) => {
+-                                    println!("Error processing chunk for channel {}: {}", channel_idx, e);
+-                                    // Optionally, you could set an error in filtered_eeg_data or skip this channel
++                    // 2. Process BASIC VOLTAGE FILTER pipeline (if active)
++                    if active_pipelines.contains(&PipelineType::BasicVoltageFilter) {
++                        // Create a mutable copy for in-place filtering
++                        let mut samples_to_filter = data.voltage_samples.clone();
++                        
++                        for (channel_idx, channel_samples_vec) in samples_to_filter.iter_mut().enumerate() {
++                            // Ensure channel_idx is within bounds for the signal_processor's configuration
++                            if channel_idx < num_channels_usize {
++                                // Create a copy of the input samples for processing
++                                let input_samples = channel_samples_vec.clone();
++                                match signal_processor.process_chunk(channel_idx, &input_samples, channel_samples_vec.as_mut_slice()) {
++                                    Ok(_) => {} // Successfully processed
++                                    Err(e) => {
++                                        println!("Error processing chunk for channel {}: {}", channel_idx, e);
++                                    }
+                                 }
++                            } else {
++                                println!("Warning: Channel index {} is out of bounds for signal_processor ({} channels configured). Skipping filtering for this channel.", channel_idx, num_channels_usize);
+                             }
+-                        } else {
+-                            println!("Warning: Channel index {} is out of bounds for signal_processor ({} channels configured). Skipping filtering for this channel.", channel_idx, num_channels_usize);
+                         }
+-                    }
+ 
+-                    let filtered_eeg_data = FilteredEegData {
+-                        timestamp: data.timestamp / 1000, // ms, for the whole batch from driver
+-                        raw_samples: Some(data.raw_samples.clone()), // Include raw samples
+-                        filtered_voltage_samples: Some(samples_to_filter), // These are now filtered
+-                        error: None,
+-                    };
+-                    let _ = tx_to_filtered_data_web_socket.send(filtered_eeg_data);
++                        let filtered_eeg_data = FilteredEegData {
++                            timestamp: data.timestamp / 1000, // ms, for the whole batch from driver
++                            raw_samples: Some(data.raw_samples.clone()), // Include raw samples
++                            filtered_voltage_samples: Some(samples_to_filter), // These are now filtered
++                            error: None,
++                        };
++                        let _ = tx_to_filtered_data_web_socket.send(filtered_eeg_data);
++                    }
+ 
+                     // --- Statistics --- (based on incoming data before filtering for consistency)
+                     if let Some(first_channel_samples) = data.voltage_samples.get(0) {
+diff --git a/daemon/src/main.rs b/daemon/src/main.rs
+index 9ee8210..abc2f47 100644
+--- a/daemon/src/main.rs
++++ b/daemon/src/main.rs
+@@ -186,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+         tx_filtered_eeg_data.clone(), // For new filtered data endpoint
+         csv_recorder.clone(),
+         is_recording.clone(),
++        connection_manager.clone(), // For demand-based processing
+         processing_token
+     ));
+ 
+@@ -343,6 +344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                             tx_filtered_eeg_data.clone(), // For new filtered data endpoint
+                             csv_recorder.clone(),
+                             is_recording.clone(),
++                            connection_manager.clone(), // For demand-based processing
+                             new_token.clone()
+                         ));
+                         
+diff --git a/daemon/src/server.rs b/daemon/src/server.rs
+index be9206a..3c5a13d 100644
+--- a/daemon/src/server.rs
++++ b/daemon/src/server.rs
+@@ -154,8 +154,8 @@ pub async fn handle_websocket(
+     println!("WebSocket client connected (ID: {}) - sending binary EEG data", client_id);
+     println!("Binary format: [timestamp (8 bytes)] [channel_samples...] for each channel");
+     
+-    // Register client with connection manager
+-    if let Err(e) = connection_manager.register_connection(client_id.clone(), ClientType::RawRecording).await {
++    // Register client with connection manager using new pipeline-aware method
++    if let Err(e) = connection_manager.register_client_pipeline(client_id.clone(), ClientType::RawRecording).await {
+         eprintln!("Failed to register client {}: {}", client_id, e);
+     }
+     
+@@ -191,8 +191,8 @@ pub async fn handle_websocket(
+         }
+     }
+     
+-    // Unregister client when connection closes
+-    if let Err(e) = connection_manager.unregister_connection(&client_id).await {
++    // Unregister client when connection closes using new pipeline-aware method
++    if let Err(e) = connection_manager.unregister_client_pipeline(&client_id).await {
+         eprintln!("Failed to unregister client {}: {}", client_id, e);
+     }
+     println!("WebSocket client disconnected (ID: {})", client_id);
+@@ -216,8 +216,8 @@ pub async fn handle_filtered_eeg_data_websocket(
+     
+     println!("Filtered EEG Data WebSocket client connected (ID: {}) - sending JSON data", client_id);
+     
+-    // Register client with connection manager
+-    if let Err(e) = connection_manager.register_connection(client_id.clone(), ClientType::EegMonitor).await {
++    // Register client with connection manager using new pipeline-aware method
++    if let Err(e) = connection_manager.register_client_pipeline(client_id.clone(), ClientType::EegMonitor).await {
+         eprintln!("Failed to register client {}: {}", client_id, e);
+     }
+     
+@@ -261,8 +261,8 @@ pub async fn handle_filtered_eeg_data_websocket(
+         }
+     }
+     
+-    // Unregister client when connection closes
+-    if let Err(e) = connection_manager.unregister_connection(&client_id).await {
++    // Unregister client when connection closes using new pipeline-aware method
++    if let Err(e) = connection_manager.unregister_client_pipeline(&client_id).await {
+         eprintln!("Failed to unregister client {}: {}", client_id, e);
+     }
+     println!("Filtered EEG Data WebSocket connection handler finished (ID: {})", client_id);
+diff --git a/driver/src/lib.rs b/driver/src/lib.rs
+index 3430eda..73134fd 100644
+--- a/driver/src/lib.rs
++++ b/driver/src/lib.rs
+@@ -5,6 +5,7 @@ pub mod eeg_system;
+ // Re-export the main types that users need
+ pub use eeg_system::EegSystem;
+ pub use board_drivers::types::{AdcConfig, DriverType, DriverStatus};
++pub use dsp::{DspCoordinator, DspRequirements, SystemState, ClientId};
+ use serde::{Serialize, Deserialize};
+ 
+ /// Processed EEG data structure
+diff --git a/todo/README.md b/todo/README.md
+index 7d190e0..e4d40de 100644
+--- a/todo/README.md
++++ b/todo/README.md
+@@ -7,9 +7,10 @@
+ 
+ # TODO Docs
+ - security.md... security hardening
+-- [EEG Performance Optimization Plan](./eeg_performance_optimization_plan.md) - **CRITICAL** - Plan to reduce CPU usage from ~16% to ~3% by eliminating multiple daemon processes and optimizing DSP pipeline.
++- [EEG Performance Optimization Plan](./eeg_performance_optimization_plan.md) - **COMPLETE** - Plan to reduce CPU usage from ~16% to ~3% by eliminating multiple daemon processes and optimizing DSP pipeline.
+ - [Part 2 Implementation Plan](./part2_implementation_plan.md) - **COMPLETE** - Detailed implementation plan for process consolidation and DSP coordinator integration.
+-- [Part 2 Implementation Status](./part2_implementation_status.md) - **READY FOR TESTING** - Phase 1 & 2 complete: PID management, DSP coordinator integration, connection manager. Ready for testing and Phase 3.
++- [Part 2 Implementation Status](./part2_implementation_status.md) - **COMPLETE** - Phase 1, 2 & 3 complete: Major performance optimization achieved (61% CPU improvement).
++- [CPU Leak Fix Implementation Plan](./cpu_leak_fix_implementation_plan.md) - **IN PROGRESS** - **CRITICAL** - Fix for escalating CPU usage (4.9% → 6.7%). Multi-pipeline demand-based processing to achieve 0% CPU when idle.
+ 
+ - [Real-Time Filter Investigation (ADS1299 & DSP)](./realtime_filter_investigation.md) - Analysis of current filter behavior and plan for dynamic UI control.
+ 

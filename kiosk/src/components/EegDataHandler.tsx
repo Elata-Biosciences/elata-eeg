@@ -10,360 +10,59 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import throttle from 'lodash.throttle';
-import { ScrollingBuffer } from '../utils/ScrollingBuffer';
-import { DEFAULT_SAMPLE_RATE, DEFAULT_BATCH_SIZE, WINDOW_DURATION } from '../utils/eegConstants';
-
+import {
+    DEFAULT_SAMPLE_RATE,
+    DEFAULT_BATCH_SIZE,
+    WINDOW_DURATION,
+    FFT_WINDOW_DURATION_MS, // Import from constants
+    FFT_HOP_DURATION_MS     // Import from constants
+} from '../utils/eegConstants';
+ 
 interface EegDataHandlerProps {
   config: any;
   onDataUpdate: (dataReceived: boolean) => void;
-  dataRef: React.MutableRefObject<ScrollingBuffer[]>;
-  windowSizeRef: React.MutableRefObject<number>;
+  onError?: (error: string) => void;
+  linesRef: React.MutableRefObject<any[]>; // Array of WebglStep instances (e.g., WebglLineRoll)
+  lastDataChunkTimeRef: React.MutableRefObject<number[]>; // Ref holding array of per-channel timestamps
+  latestTimestampRef: React.MutableRefObject<number>; // Ref holding the single latest timestamp
   debugInfoRef: React.MutableRefObject<{
     lastPacketTime: number;
     packetsReceived: number;
     samplesProcessed: number;
-  }>;
-  latestTimestampRef: React.MutableRefObject<number>;
+  }>; // Ref for debug information including packet count
+  onFftData?: (channelIndex: number, fftOutput: number[]) => void; // New callback for FFT data
 }
 
 export function useEegDataHandler({
   config,
   onDataUpdate,
-  dataRef,
-  windowSizeRef,
+  onError,
+  linesRef,
+  lastDataChunkTimeRef,
+  latestTimestampRef,
   debugInfoRef,
-  latestTimestampRef
+  onFftData // Destructure the new FFT callback
 }: EegDataHandlerProps) {
   const [status, setStatus] = useState('Connecting...');
   const wsRef = useRef<WebSocket | null>(null);
-  const handleMessageRef = useRef<any>(null);
+  // handleMessageRef is no longer needed at this scope
   const dataReceivedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastTimestampRef = useRef<number>(Date.now());
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
   const isProduction = process.env.NODE_ENV === 'production';
-  const lastWindowSizeRef = useRef<number>(windowSizeRef.current);
-
-  // Calculate optimal throttle interval based on config
-  const getThrottleInterval = useCallback(() => {
-    // Always use the FPS from config to calculate the throttle interval
-    // This gives us the time between frames in milliseconds
-    return Math.max(8, 1000 / (config?.fps || 0));
-  }, [config]);
-
-  // Monitor changes to windowSizeRef and update buffer capacities
-  useEffect(() => {
-    // Check if window size has changed
-    if (windowSizeRef.current !== lastWindowSizeRef.current) {
-      const newSize = windowSizeRef.current;
-      
-      if (!isProduction) {
-        console.log(`Window size changed: ${lastWindowSizeRef.current} -> ${newSize}`);
-      }
-      
-      // Update existing buffers instead of recreating them
-      dataRef.current.forEach((buffer, index) => {
-        if (buffer) {
-          if (!isProduction) {
-            console.log(`Updating capacity for channel ${index}: ${buffer.getCapacity()} -> ${newSize}`);
-          }
-          buffer.updateCapacity(newSize);
-        }
-      });
-      
-      // Update last window size
-      lastWindowSizeRef.current = newSize;
-    }
-    
-    // This effect runs on every render, but only does work when windowSizeRef.current changes
-  });
-
-  // Ensure all buffers are initialized - but only when necessary
-  useEffect(() => {
-    // Initialize buffers for all channels
-    const channelCount = config?.channels?.length || 4;
-    
-    // Only reinitialize if channel count changed or buffers not initialized
-    const needsReinitialization =
-      dataRef.current.length !== channelCount ||
-      dataRef.current.length === 0;
-    
-    if (needsReinitialization) {
-      dataRef.current = Array(channelCount).fill(null).map(() =>
-        new ScrollingBuffer(windowSizeRef.current, config?.sample_rate || DEFAULT_SAMPLE_RATE)
-      );
-      
-      if (!isProduction) {
-        console.log(`Initialized ${channelCount} channel buffers in useEffect`);
-      }
-    } else {
-      // Update sample rate and capacity if needed
-      dataRef.current.forEach(buffer => {
-        if (buffer) {
-          // Update sample rate if needed
-          const sampleRate = config?.sample_rate || DEFAULT_SAMPLE_RATE;
-          if (buffer.getSampleRate() !== sampleRate) {
-            buffer.setSampleRate(sampleRate);
-          }
-          
-          // Update capacity if needed
-          if (buffer.getCapacity() !== windowSizeRef.current) {
-            buffer.updateCapacity(windowSizeRef.current);
-          }
-        }
-      });
-    }
-  }, [config, dataRef, windowSizeRef, isProduction]);
-
-  // Create message handler function with stabilized dependencies
-  const createMessageHandler = useCallback(() => {
-    const interval = getThrottleInterval();
-    
-    // Only create a new handler if the interval has changed or if no handler exists
-    if (handleMessageRef.current && handleMessageRef.current.interval === interval) {
-      return handleMessageRef.current;
-    }
-    
-    if (!isProduction) {
-      console.log(`Setting throttle interval to ${interval.toFixed(2)}ms (${(1000/interval).toFixed(2)} FPS)`);
-    }
-    
-    // Cancel previous handler if it exists
-    if (handleMessageRef.current) {
-      handleMessageRef.current.cancel();
-    }
-    
-    // Create new throttled handler
-    const handler = throttle((event: MessageEvent) => {
-      try {
-        // For binary data format
-        if (event.data instanceof ArrayBuffer) {
-          const dataView = new DataView(event.data);
-          
-          // First 8 bytes are the timestamp (as BigInt64)
-          let timestamp = Number(dataView.getBigInt64(0, true));
-          const now = Date.now();
-          lastTimestampRef.current = now;
-          
-          // Only convert seconds to milliseconds if needed
-          const timeDiff = Math.abs(timestamp - now);
-          if (timeDiff > 10000) {
-            if (!isProduction) {
-              console.log(`Timestamp adjustment: ${timestamp} -> ${timestamp < 1000000000000 ? timestamp * 1000 : timestamp}`);
-            }
-            
-            // Only convert seconds to milliseconds if needed
-            if (timestamp < 1000000000000) { // If timestamp is less than year 2001 in ms
-              timestamp = timestamp * 1000; // Convert to milliseconds
-            }
-          }
-          
-          // Update the latest timestamp reference for our rendering window
-          latestTimestampRef.current = timestamp;
-          
-          // Calculate how many samples per channel
-          const channelCount = config?.channels?.length || 4;
-          const samplesPerChannel = (event.data.byteLength - 8) / 4 / channelCount; // channelCount channels, 4 bytes per float
-          const sampleRate = config?.sample_rate || DEFAULT_SAMPLE_RATE;
-          const sampleInterval = 1000 / sampleRate;
-          
-          // Update debug info
-          const debugInfo = debugInfoRef.current;
-          debugInfo.packetsReceived++;
-          debugInfo.samplesProcessed += samplesPerChannel * channelCount; // Use dynamic channel count
-          
-          // Notify the buffer that a new data chunk has arrived
-          // This updates the timestamp for calculating render offset
-          for (let ch = 0; ch < channelCount; ch++) {
-            if (dataRef.current[ch]) {
-              dataRef.current[ch].notifyNewDataChunk();
-            }
-          }
-          
-          // Set data received indicator
-          onDataUpdate(true);
-          
-          // Clear previous timeout if it exists
-          if (dataReceivedTimeoutRef.current) {
-            clearTimeout(dataReceivedTimeoutRef.current);
-          }
-          
-          // Reset data received indicator after 500ms of no data
-          dataReceivedTimeoutRef.current = setTimeout(() => {
-            onDataUpdate(false);
-          }, 500);
-          
-          // Process each channel - optimized for performance
-          // Use the channelCount already defined above
-          for (let ch = 0; ch < channelCount; ch++) {
-            if (!dataRef.current[ch]) {
-              if (!isProduction) {
-                console.warn(`Channel ${ch} buffer not initialized!`);
-              }
-              continue;
-            }
-            
-            // Pre-calculate base offset for this channel to avoid repeated calculations
-            const channelBaseOffset = 8 + (ch * samplesPerChannel * 4);
-            
-            // Log buffer capacity and current size occasionally for debugging
-            if (!isProduction && Math.random() < 0.01) {
-              console.log(`[EegDataHandler] Channel ${ch} buffer: capacity=${dataRef.current[ch].getCapacity()}, samples=${samplesPerChannel}`);
-            }
-            
-            // Process all samples for this channel in a single loop
-            for (let i = 0; i < samplesPerChannel; i++) {
-              const offset = channelBaseOffset + (i * 4);
-              
-              // Add bounds checking to prevent "Offset is outside the bounds of the Dataview" error
-              if (offset + 4 <= event.data.byteLength) {
-                const value = dataView.getFloat32(offset, true); // true for little-endian
-                
-                // Fast path for valid values (most common case)
-                if (isFinite(value) && Math.abs(value) <= 10) {
-                  dataRef.current[ch].push(value);
-                  continue;
-                }
-                
-                // Handle edge cases
-                if (isNaN(value) || !isFinite(value)) {
-                  if (!isProduction) {
-                    console.warn(`Invalid value for channel ${ch}: ${value}`);
-                  }
-                  dataRef.current[ch].push(0);
-                } else {
-                  // Clamp large values
-                  dataRef.current[ch].push(Math.max(-3, Math.min(3, value)));
-                }
-              } else {
-                // Handle out-of-bounds access
-                if (!isProduction) {
-                  console.warn(`Offset ${offset} outside bounds of DataView (size: ${event.data.byteLength})`);
-                }
-                // Push a default value to maintain continuity
-                dataRef.current[ch].push(0);
-              }
-            }
-          }
-        }
-        // Fallback for JSON data (for backward compatibility)
-        else {
-          const data = JSON.parse(event.data);
-          lastTimestampRef.current = Date.now();
-          
-          // Process JSON data more efficiently
-          data.channels.forEach((channel: number[], channelIndex: number) => {
-            if (!dataRef.current[channelIndex]) return;
-            
-            // Process all values at once
-            for (let i = 0; i < channel.length; i++) {
-              const value = channel[i];
-              if (isFinite(value) && Math.abs(value) <= 10) {
-                dataRef.current[channelIndex].push(value);
-              } else if (isNaN(value) || !isFinite(value)) {
-                dataRef.current[channelIndex].push(0);
-              } else {
-                dataRef.current[channelIndex].push(Math.max(-3, Math.min(3, value)));
-              }
-            }
-          });
-          
-          // Notify the buffer that a new data chunk has arrived
-          // This updates the timestamp for calculating render offset
-          const channelCount = config?.channels?.length || 4;
-          for (let ch = 0; ch < channelCount; ch++) {
-            if (dataRef.current[ch]) {
-              dataRef.current[ch].notifyNewDataChunk();
-            }
-          }
-        }
-      } catch (error) {
-        console.error('WebSocket error:', error);
-      }
-    }, interval, { trailing: true });
-    
-    // Store the interval on the handler for comparison in future calls
-    (handler as any).interval = interval;
-    
-    handleMessageRef.current = handler;
-    return handler;
-  }, [getThrottleInterval, isProduction]); // Reduced dependencies to only essential ones
-
-  // Update window size when config changes - with memoized config check
-  const lastConfigRef = useRef<any>(null);
+  // No queues or animation frame needed for immediate display
+  const sampleBuffersRef = useRef<Float32Array[]>([]); // For raw data display
+  // const fftBuffersRef = useRef<number[][]>([]); // Removed: FFT calculation is now backend-driven
+  // const samplesSinceLastFftRef = useRef<number[]>([]); // Removed: FFT calculation is now backend-driven
   
-  useEffect(() => {
-    // Only update if config has actually changed in a meaningful way
-    const configChanged = !lastConfigRef.current ||
-                          lastConfigRef.current.sample_rate !== config?.sample_rate ||
-                          lastConfigRef.current.channels?.length !== config?.channels?.length;
-    
-    if (config && configChanged) {
-      // Store current config for future comparison
-      lastConfigRef.current = {
-        sample_rate: config.sample_rate,
-        channels: [...(config.channels || [])]
-      };
-      
-      // Add safeguard for sample rate as suggested in the code review
-      const safeSampleRate = Math.max(1, config.sample_rate || DEFAULT_SAMPLE_RATE);
-      
-      // Note: windowSizeRef.current is now updated in EegMonitor.tsx based on screen width
-      // We don't need to update it here anymore
-      
-      // Get channel count from config
-      const channelCount = config?.channels?.length || 4;
-      
-      // Check if we need to reinitialize buffers or just update them
-      if (dataRef.current.length !== channelCount) {
-        // Channel count changed, need to reinitialize
-        dataRef.current = Array(channelCount).fill(null).map(() =>
-          new ScrollingBuffer(windowSizeRef.current, safeSampleRate)
-        );
-        
-        if (!isProduction) {
-          console.log(`Reinitialized ${channelCount} channel buffers due to channel count change`);
-        }
-      } else {
-        // Just update existing buffers
-        dataRef.current.forEach(buffer => {
-          if (buffer) {
-            // Update sample rate
-            buffer.setSampleRate(safeSampleRate);
-            
-            // Update capacity if needed
-            if (buffer.getCapacity() !== windowSizeRef.current) {
-              buffer.updateCapacity(windowSizeRef.current);
-            }
-          }
-        });
-        
-        if (!isProduction) {
-          console.log(`Updated ${channelCount} channel buffers with sample rate ${safeSampleRate}Hz`);
-        }
-      }
-      
-      // Recreate message handler with new throttle interval
-      if (wsRef.current) {
-        const handler = createMessageHandler();
-        wsRef.current.onmessage = handler;
-      }
-    }
-  }, [config, createMessageHandler, isProduction]); // Reduced dependencies
+  // createMessageHandler logic is now moved inside connectWebSocket
+
+
 
   /**
    * Function to establish WebSocket connection with automatic reconnection
    */
-  const connectWebSocket = useCallback(() => {
-    // Only initialize if buffers don't exist yet
-    if (dataRef.current.length === 0) {
-      const channelCount = config?.channels?.length || 4;
-      dataRef.current = Array(channelCount).fill(null).map(() =>
-        new ScrollingBuffer(windowSizeRef.current, config?.sample_rate || DEFAULT_SAMPLE_RATE)
-      );
-    }
-    
+  const connectWebSocket = useCallback((currentConfig: any) => {
     // Clear any existing reconnect timeout
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -381,7 +80,15 @@ export function useEegDataHandler({
     
     setStatus('Connecting...');
     
-    const ws = new WebSocket('ws://localhost:8080/eeg');
+    // Use currentConfig passed to the function
+    if (!currentConfig) {
+        console.warn("connectWebSocket called without config.");
+        return;
+    }
+ 
+    const wsHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    // Use the filtered data endpoint instead of the raw /eeg endpoint
+    const ws = new WebSocket(`ws://${wsHost}:8080/ws/eeg/data__basic_voltage_filter`);
     wsRef.current = ws;
     
     // Set binary type for WebSocket
@@ -395,9 +102,119 @@ export function useEegDataHandler({
       }
     };
     
-    // Create message handler with current config
-    const handler = createMessageHandler();
-    ws.onmessage = handler;
+    // --- WebSocket Message Handler ---
+    // Initialize queues based on channel count whenever config changes (handled in useEffect below)
+
+    const handleWebSocketMessage = (event: MessageEvent) => {
+      try {
+        // Handle JSON data from the filtered endpoint
+        if (typeof event.data === 'string') {
+          const filteredData = JSON.parse(event.data);
+          
+          // Handle error messages
+          if (filteredData.error) {
+            console.error("EEG driver error:", filteredData.error);
+            if (typeof onError === 'function') onError(`EEG driver error: ${filteredData.error}`);
+            return;
+          }
+
+          // Handle filtered voltage samples
+          if (filteredData.filtered_voltage_samples && Array.isArray(filteredData.filtered_voltage_samples)) {
+            const configuredChannelCount = currentConfig?.channels?.length || 0;
+            if (configuredChannelCount === 0) return;
+
+            const channelData = filteredData.filtered_voltage_samples;
+            if (channelData.length === 0) {
+              if (!isProduction) console.warn("Received packet with no filtered voltage samples.");
+              return;
+            }
+
+            const samplesPerChannel = channelData[0]?.length || 0;
+            if (samplesPerChannel <= 0) {
+              if (!isProduction) console.warn("Received packet with empty channel data.");
+              return;
+            }
+
+            // Ensure we have enough sample buffers
+            if (sampleBuffersRef.current.length < configuredChannelCount) {
+              sampleBuffersRef.current = Array(configuredChannelCount).fill(null).map((_, i) => sampleBuffersRef.current[i] || null);
+            }
+
+            for (let ch = 0; ch < Math.min(configuredChannelCount, channelData.length); ch++) {
+              let currentSampleBuffer = sampleBuffersRef.current[ch];
+
+              if (!currentSampleBuffer || currentSampleBuffer.length !== samplesPerChannel) {
+                currentSampleBuffer = new Float32Array(samplesPerChannel);
+                sampleBuffersRef.current[ch] = currentSampleBuffer;
+              }
+
+              // Copy filtered data to buffer
+              const channelSamples = channelData[ch];
+              for (let i = 0; i < samplesPerChannel; i++) {
+                const rawValue = channelSamples[i];
+                currentSampleBuffer[i] = isFinite(rawValue) ? rawValue : 0;
+                
+                // DEBUG: Log some sample values to understand the data range
+                if (ch === 0 && i < 3 && debugInfoRef.current.packetsReceived % 100 === 0) {
+                  console.log(`[EegDataHandler DEBUG FILTERED] Ch${ch} Sample${i}: ${rawValue} (finite: ${isFinite(rawValue)})`);
+                }
+              }
+
+              // Update timestamps
+              if (lastDataChunkTimeRef.current && lastDataChunkTimeRef.current[ch] !== undefined) {
+                lastDataChunkTimeRef.current[ch] = performance.now();
+              }
+
+              // Add data to WebGL lines
+              if (linesRef.current && linesRef.current[ch] && samplesPerChannel > 0) {
+                linesRef.current[ch].shiftAdd(currentSampleBuffer);
+              }
+            }
+
+            // Update global timestamp
+            if (latestTimestampRef) {
+              latestTimestampRef.current = performance.now();
+            }
+
+            // Update debug info
+            if (debugInfoRef) {
+              debugInfoRef.current.packetsReceived++;
+              debugInfoRef.current.lastPacketTime = performance.now();
+              debugInfoRef.current.samplesProcessed += samplesPerChannel * Math.min(configuredChannelCount, channelData.length);
+            }
+
+            if (typeof onDataUpdate === 'function') {
+              onDataUpdate(true);
+            }
+          }
+          return;
+        }
+
+        // Fallback: Handle binary data (in case we need to support both formats)
+        if (!(event.data instanceof ArrayBuffer)) {
+          return;
+        }
+        
+        console.warn("[EegDataHandler] Received binary data but expected JSON from filtered endpoint");
+
+        if (dataReceivedTimeoutRef.current) {
+          clearTimeout(dataReceivedTimeoutRef.current);
+        }
+        dataReceivedTimeoutRef.current = setTimeout(() => {
+          if (typeof onDataUpdate === 'function') {
+            onDataUpdate(false);
+          }
+        }, 1000);
+
+      } catch (error) {
+        console.error("Error parsing EEG binary data:", error);
+        if (typeof onError === 'function') onError(`Error parsing EEG data: ${error}`);
+      }
+    }; // End of handleWebSocketMessage
+
+    // Assign the raw message handler
+    ws.onmessage = handleWebSocketMessage;
+    // --- End of moved message handler logic ---
     
     ws.onclose = (event) => {
       if (!isProduction) {
@@ -425,7 +242,8 @@ export function useEegDataHandler({
         if (!isProduction) {
           console.log('Attempting to reconnect...');
         }
-        connectWebSocket();
+        // Pass the config again when reconnecting
+        connectWebSocket(currentConfig);
       }, reconnectDelay);
     };
     
@@ -433,42 +251,82 @@ export function useEegDataHandler({
       if (!isProduction) {
         console.error('WebSocket error:', error);
       }
-      setStatus('Error');
-      // Don't reconnect here - the onclose handler will be called after an error
+      // Don't update timestamp on error, just report it
+      // if (latestTimestampRef) {
+      //     latestTimestampRef.current = performance.now();
+      // }
+      if (typeof onError === 'function') onError(`WebSocket error: ${error}`);
+      // onclose will handle reconnection attempt
     };
-    
-  }, [createMessageHandler, isProduction]); // Reduced dependencies to prevent unnecessary reconnections
+
+  // Dependencies: Only include stable references or primitives if possible.
+  // config is passed directly when called.
+  // linesRef, lastDataChunkTimeRef, latestTimestampRef, debugInfoRef, onDataUpdate, onError, onFftData are refs/callbacks assumed stable.
+  }, [isProduction, linesRef, lastDataChunkTimeRef, latestTimestampRef, debugInfoRef, onDataUpdate, onError, onFftData]);
   
   /**
-   * Set up WebSocket connection with stable lifecycle
+   * Effect for managing WebSocket connection and sample processing interval.
    */
   useEffect(() => {
-    // Only connect once on initial mount
-    connectWebSocket();
-    
+    const currentConfig = config; // Capture config for this effect run
+    const numChannels = currentConfig?.channels?.length || 0;
+    const sampleRate = currentConfig?.sample_rate || DEFAULT_SAMPLE_RATE;
+
+    // Initialize/Reset FFT buffers when config changes (e.g., channel count) - REMOVED
+    // if (numChannels > 0) {
+    //   fftBuffersRef.current = Array(numChannels).fill(null).map(() => []);
+    //   samplesSinceLastFftRef.current = Array(numChannels).fill(0);
+    // } else {
+    //   fftBuffersRef.current = [];
+    //   samplesSinceLastFftRef.current = [];
+    // }
+ 
+    // --- Connect WebSocket ---
+    if (currentConfig) {
+      connectWebSocket(currentConfig);
+    }
+
+    // --- No Sample Processing Loop Needed ---
+    // Data is processed directly in handleWebSocketMessage
+
+    // --- Cleanup Function ---
     return () => {
-      // Clean up on component unmount - proper cleanup prevents memory leaks
-      if (handleMessageRef.current) {
-        handleMessageRef.current.cancel();
+      if (!isProduction) {
+        console.log("Cleaning up EegDataHandler effect...");
       }
-      
+
+      // Clear reconnect timeout
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+        if (!isProduction) console.log("Reconnect timeout cleared.");
       }
-      
+
+      // Clear data received timeout
       if (dataReceivedTimeoutRef.current) {
         clearTimeout(dataReceivedTimeoutRef.current);
+        dataReceivedTimeoutRef.current = null;
+        if (!isProduction) console.log("Data received timeout cleared.");
       }
-      
+
+      // Close WebSocket connection
       if (wsRef.current) {
-        wsRef.current.close();
+        if (!isProduction) console.log("Closing WebSocket connection...");
+        try {
+          wsRef.current.onclose = null; // Prevent reconnect logic during manual close
+          wsRef.current.onerror = null;
+          wsRef.current.close();
+        } catch (e) {
+          // Ignore errors during cleanup close
+        }
         wsRef.current = null;
       }
     };
-  }, []); // Empty dependency array ensures this only runs once on mount
-
-  // Get FPS directly from config with no fallback
-  const fps = config?.fps || 0;
-
-  return { status, fps };
+  // Dependencies: Re-run effect if config changes that affect connection or processing rate/channels.
+  // Also include connectWebSocket as it's defined outside but used inside.
+  // onFftData is added to dependencies of connectWebSocket, so not strictly needed here if connectWebSocket handles it.
+  // However, including config directly ensures re-initialization of FFT buffers if channel count changes.
+  }, [config, connectWebSocket, isProduction, linesRef, latestTimestampRef, debugInfoRef]);
+  // Return status (FPS is now implicitly handled by sample rate)
+  return { status };
 }

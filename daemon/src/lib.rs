@@ -2,6 +2,8 @@
 pub mod config;
 pub mod driver_handler;
 pub mod server;
+pub mod pid_manager;
+pub mod connection_manager;
 
 // Test modules
 #[cfg(test)]

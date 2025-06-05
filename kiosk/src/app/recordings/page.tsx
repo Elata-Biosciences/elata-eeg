@@ -50,7 +50,7 @@ export default function RecordingsPage() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 overflow-auto">
+    <div className="container mx-auto px-4 py-8">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">EEG Recordings</h1>
         <Link href="/" className="text-blue-500 hover:text-blue-700">
@@ -65,7 +65,7 @@ export default function RecordingsPage() {
       ) : recordings.length === 0 ? (
         <div className="text-center py-10">No recordings found.</div>
       ) : (
-        <div className="bg-white shadow-md rounded-lg overflow-hidden">
+        <div className="bg-white shadow-md rounded-lg overflow-y-auto max-h-[calc(100vh-10rem)]">
           <table className="min-w-full divide-y divide-gray-200 ">
             <thead className="bg-gray-50">
               <tr>

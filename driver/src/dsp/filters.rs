@@ -1,58 +1,38 @@
-use biquad::{Biquad, DirectForm2Transposed, Coefficients, Type, Q_BUTTERWORTH_F32, ToHertz};
-use rustfft::{FftPlanner, num_complex::Complex};
-use std::sync::Arc;
-use std::time::Instant;
 use std::f32::consts::PI;
-// TODO add ADS1299 constants
-use std::error::Error;
-use std::thread::sleep;
-use std::time::{Duration, SystemTime};
-use tokio;
-use crate::board_driver::types::DriverError;
-use crate::board_driver::types::AdcDriver;
-use crate::board_driver::types::DriverStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 
-#[derive(Debug)]
-pub struct FrequencyBins {
-    // Delta (0.5-4 Hz) - 7 bins
-    delta: Vec<f32>,  
-    // Theta (4-8 Hz) - 8 bins
-    theta: Vec<f32>,  
-    // Alpha (8-13 Hz) - 10 bins
-    alpha: Vec<f32>,  
-    // Beta (13-30 Hz) - 17 bins
-    beta: Vec<f32>,   
-    // Gamma (30-150 Hz) - 32 bins
-    gamma: Vec<f32>,
-    line_noise_50hz: f32,  // Around 50Hz
-    line_noise_60hz: f32,  // Around 60Hz
-}
-
-// Update the FilterCoefficients to use biquad's Coefficients
+// Simple biquad filter coefficients
 #[derive(Clone, Debug)]
 struct FilterCoefficients {
-    coeffs: Coefficients<f32>
+    b0: f32, b1: f32, b2: f32,  // numerator coefficients
+    a1: f32, a2: f32,           // denominator coefficients (a0 is normalized to 1)
 }
 
-// Simplify DigitalFilter to use biquad's DirectForm2Transposed
+// Direct Form II Transposed biquad filter implementation
 #[derive(Debug)]
 struct DigitalFilter {
-    filter: DirectForm2Transposed<f32>
+    coeffs: FilterCoefficients,
+    z1: f32,  // delay line 1
+    z2: f32,  // delay line 2
 }
 
 impl DigitalFilter {
     fn new(coeffs: FilterCoefficients) -> Self {
         Self {
-            filter: DirectForm2Transposed::new(coeffs.coeffs)
+            coeffs,
+            z1: 0.0,
+            z2: 0.0,
         }
     }
 
     fn process(&mut self, x: f32) -> f32 {
         // Clamp input to prevent extreme values
         let x = x.clamp(-8192.0, 8191.0);
-        let y = self.filter.run(x);
+        
+        // Direct Form II Transposed implementation
+        let y = self.coeffs.b0 * x + self.z1;
+        self.z1 = self.coeffs.b1 * x - self.coeffs.a1 * y + self.z2;
+        self.z2 = self.coeffs.b2 * x - self.coeffs.a2 * y;
+        
         // Clamp output to prevent instability
         y.clamp(-8192.0, 8191.0)
     }
@@ -68,18 +48,34 @@ struct HighpassFilter(DigitalFilter);
 #[derive(Debug)]
 struct LowpassFilter(DigitalFilter);
 
-// Update NotchFilter implementation to use BandPass instead of NotchFilter
 impl NotchFilter {
     fn new(sample_rate: f32, notch_freq: f32) -> Self {
         let q_factor = 30.0;  // High Q for narrow notch
-        let coeffs = Coefficients::<f32>::from_params(
-            Type::Notch,  // <-- Changed from BandPass to Notch
-            sample_rate.hz(),
-            notch_freq.hz(),
-            q_factor
-        ).unwrap();
+        let coeffs = Self::notch_coefficients(sample_rate, notch_freq, q_factor);
+        NotchFilter(DigitalFilter::new(coeffs))
+    }
+    
+    fn notch_coefficients(sample_rate: f32, freq: f32, q: f32) -> FilterCoefficients {
+        let omega = 2.0 * PI * freq / sample_rate;
+        let alpha = omega.sin() / (2.0 * q);
+        let cos_omega = omega.cos();
         
-        NotchFilter(DigitalFilter::new(FilterCoefficients { coeffs }))
+        // Notch filter coefficients
+        let b0 = 1.0;
+        let b1 = -2.0 * cos_omega;
+        let b2 = 1.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_omega;
+        let a2 = 1.0 - alpha;
+        
+        // Normalize by a0
+        FilterCoefficients {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
     }
     
     fn process(&mut self, x: f32) -> f32 {
@@ -87,17 +83,34 @@ impl NotchFilter {
     }
 }
 
-// Similar updates for HighpassFilter
 impl HighpassFilter {
     fn new(sample_rate: f32, cutoff_freq: f32) -> Self {
-        let coeffs = Coefficients::<f32>::from_params(
-            Type::HighPass,
-            sample_rate.hz(),
-            cutoff_freq.hz(),
-            Q_BUTTERWORTH_F32
-        ).unwrap();
+        let q = 0.7071067811865476; // Butterworth Q factor (1/sqrt(2))
+        let coeffs = Self::highpass_coefficients(sample_rate, cutoff_freq, q);
+        Self(DigitalFilter::new(coeffs))
+    }
+    
+    fn highpass_coefficients(sample_rate: f32, freq: f32, q: f32) -> FilterCoefficients {
+        let omega = 2.0 * PI * freq / sample_rate;
+        let alpha = omega.sin() / (2.0 * q);
+        let cos_omega = omega.cos();
         
-        Self(DigitalFilter::new(FilterCoefficients { coeffs }))
+        // High-pass filter coefficients
+        let b0 = (1.0 + cos_omega) / 2.0;
+        let b1 = -(1.0 + cos_omega);
+        let b2 = (1.0 + cos_omega) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_omega;
+        let a2 = 1.0 - alpha;
+        
+        // Normalize by a0
+        FilterCoefficients {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
     }
     
     fn process(&mut self, x: f32) -> f32 {
@@ -105,17 +118,34 @@ impl HighpassFilter {
     }
 }
 
-// And LowpassFilter
 impl LowpassFilter {
     fn new(sample_rate: f32, cutoff_freq: f32) -> Self {
-        let coeffs = Coefficients::<f32>::from_params(
-            Type::LowPass,
-            sample_rate.hz(),
-            cutoff_freq.hz(),
-            Q_BUTTERWORTH_F32
-        ).unwrap();
+        let q = 0.7071067811865476; // Butterworth Q factor (1/sqrt(2))
+        let coeffs = Self::lowpass_coefficients(sample_rate, cutoff_freq, q);
+        Self(DigitalFilter::new(coeffs))
+    }
+    
+    fn lowpass_coefficients(sample_rate: f32, freq: f32, q: f32) -> FilterCoefficients {
+        let omega = 2.0 * PI * freq / sample_rate;
+        let alpha = omega.sin() / (2.0 * q);
+        let cos_omega = omega.cos();
         
-        Self(DigitalFilter::new(FilterCoefficients { coeffs }))
+        // Low-pass filter coefficients
+        let b0 = (1.0 - cos_omega) / 2.0;
+        let b1 = 1.0 - cos_omega;
+        let b2 = (1.0 - cos_omega) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_omega;
+        let a2 = 1.0 - alpha;
+        
+        // Normalize by a0
+        FilterCoefficients {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+        }
     }
     
     fn process(&mut self, x: f32) -> f32 {
@@ -126,29 +156,43 @@ impl LowpassFilter {
 pub struct SignalProcessor {
     sample_rate: u32,
     num_channels: usize,
-    notch_filters_50hz: Vec<NotchFilter>,
-    notch_filters_60hz: Vec<NotchFilter>,
+    powerline_notch_filters: Option<Vec<NotchFilter>>, // Holds 50Hz OR 60Hz filters, or None
     highpass_filters: Vec<HighpassFilter>,
     lowpass_filters: Vec<LowpassFilter>,
 }
 
 impl SignalProcessor {
-    pub fn new(sample_rate: u32, num_channels: usize, dsp_high_pass_cutoff: f32, dsp_low_pass_cutoff: f32) -> Self {
+    pub fn new(sample_rate: u32, num_channels: usize, dsp_high_pass_cutoff: f32, dsp_low_pass_cutoff: f32, powerline_filter_hz: Option<u32>) -> Self {
+        println!("[SignalProcessor::new] Initializing with sample_rate: {}, num_channels: {}, HP_cutoff: {}, LP_cutoff: {}, powerline_filter_hz: {:?}",
+                 sample_rate, num_channels, dsp_high_pass_cutoff, dsp_low_pass_cutoff, powerline_filter_hz);
         // Add validation for sample rate
         assert!(sample_rate > 0, "Sample rate must be positive");
         assert!(sample_rate >= 200, "Sample rate should be at least 200Hz for proper filter operation");
         
         let sample_rate_f32 = sample_rate as f32;
         
+        // Create powerline notch filters based on the configuration
+        let powerline_notch_filters = match powerline_filter_hz {
+            Some(freq) if freq == 50 || freq == 60 => {
+                Some((0..num_channels)
+                    .map(|_| NotchFilter::new(sample_rate_f32, freq as f32))
+                    .collect())
+            },
+            _ => {
+                println!("[SignalProcessor::new] Powerline filter is OFF or invalid value: {:?}", powerline_filter_hz);
+                None // No powerline filter
+            }
+        };
+        if powerline_notch_filters.is_some() {
+            println!("[SignalProcessor::new] Powerline notch filters CREATED for {:?} Hz", powerline_filter_hz.unwrap());
+        } else {
+            println!("[SignalProcessor::new] Powerline notch filters are NONE");
+        }
+        
         Self {
             sample_rate,
             num_channels,
-            notch_filters_50hz: (0..num_channels)
-                .map(|_| NotchFilter::new(sample_rate_f32, 50.0))
-                .collect(),
-            notch_filters_60hz: (0..num_channels)
-                .map(|_| NotchFilter::new(sample_rate_f32, 60.0))
-                .collect(),
+            powerline_notch_filters,
             highpass_filters: (0..num_channels)
                 .map(|_| HighpassFilter::new(sample_rate_f32, dsp_high_pass_cutoff))
                 .collect(),
@@ -164,23 +208,84 @@ impl SignalProcessor {
         
         let mut processed = sample;
         processed = self.highpass_filters[channel].process(processed);  // Move highpass first
-        processed = self.notch_filters_50hz[channel].process(processed);
-        processed = self.notch_filters_60hz[channel].process(processed);
+        
+        // Apply powerline notch filter if configured
+        if let Some(notch_filters) = &mut self.powerline_notch_filters {
+            if channel < notch_filters.len() {
+                processed = notch_filters[channel].process(processed);
+            }
+        }
+        
         processed = self.lowpass_filters[channel].process(processed);
         processed
     }
+    
+    /// Process a chunk of samples for a specific channel
+    ///
+    /// This is more efficient than processing samples individually when working with batches
+    ///
+    /// # Arguments
+    /// * `channel` - The channel index
+    /// * `samples` - The input samples to process
+    /// * `output` - The buffer to store processed samples (must be pre-allocated with same length as samples)
+    ///
+    /// # Returns
+    /// * `Result<(), &'static str>` - Ok if successful, Err with message if failed
+    pub fn process_chunk(&mut self, channel: usize, samples: &[f32], output: &mut [f32]) -> Result<(), &'static str> {
+        // Validate inputs
+        if channel >= self.num_channels {
+            return Err("Channel index out of bounds");
+        }
+        
+        if output.len() < samples.len() {
+            return Err("Output buffer too small");
+        }
+        
+        // Process each sample through the filter chain
+        for (i, &sample) in samples.iter().enumerate() {
+            let mut processed = sample;
+            processed = self.highpass_filters[channel].process(processed);
+            
+            // Apply powerline notch filter if configured
+            if let Some(notch_filters) = &mut self.powerline_notch_filters {
+                if channel < notch_filters.len() {
+                    processed = notch_filters[channel].process(processed);
+                }
+            }
+            
+            processed = self.lowpass_filters[channel].process(processed);
+            output[i] = processed;
+        }
+        
+        Ok(())
+    }
 
-    pub fn reset(&mut self, new_sample_rate: u32, new_num_channels: usize, dsp_high_pass_cutoff: f32, dsp_low_pass_cutoff: f32) {
+    pub fn reset(&mut self, new_sample_rate: u32, new_num_channels: usize, dsp_high_pass_cutoff: f32, dsp_low_pass_cutoff: f32, powerline_filter_hz: Option<u32>) {
+        println!("[SignalProcessor::reset] Resetting with sample_rate: {}, num_channels: {}, HP_cutoff: {}, LP_cutoff: {}, powerline_filter_hz: {:?}",
+                 new_sample_rate, new_num_channels, dsp_high_pass_cutoff, dsp_low_pass_cutoff, powerline_filter_hz);
         self.sample_rate = new_sample_rate;
         self.num_channels = new_num_channels;
         // Recreate all filters
         let sample_rate = self.sample_rate as f32;
-        self.notch_filters_50hz = (0..self.num_channels)
-            .map(|_| NotchFilter::new(sample_rate, 50.0))
-            .collect();
-        self.notch_filters_60hz = (0..self.num_channels)
-            .map(|_| NotchFilter::new(sample_rate, 60.0))
-            .collect();
+        
+        // Create powerline notch filters based on the configuration
+        self.powerline_notch_filters = match powerline_filter_hz {
+            Some(freq) if freq == 50 || freq == 60 => {
+                Some((0..self.num_channels)
+                    .map(|_| NotchFilter::new(sample_rate, freq as f32))
+                    .collect())
+            },
+            _ => {
+                println!("[SignalProcessor::reset] Powerline filter is OFF or invalid value: {:?}", powerline_filter_hz);
+                None // No powerline filter
+            }
+        };
+        if self.powerline_notch_filters.is_some() {
+            println!("[SignalProcessor::reset] Powerline notch filters RE-CREATED for {:?} Hz", powerline_filter_hz.unwrap());
+        } else {
+            println!("[SignalProcessor::reset] Powerline notch filters are NOW NONE");
+        }
+        
         self.highpass_filters = (0..self.num_channels)
             .map(|_| HighpassFilter::new(sample_rate, dsp_high_pass_cutoff))
             .collect();

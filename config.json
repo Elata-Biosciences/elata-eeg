@@ -2,7 +2,11 @@
   "max_recording_length_minutes": 60,
   "recordings_directory": "./recordings/",
   "session": "",
-  "dsp_high_pass_cutoff_hz": 2,
-  "dsp_low_pass_cutoff_hz": 40.0,
-  "batch_size": 16
+  "batch_size": 16,
+  "driver_type": "Ads1299",
+  "filter_config": {
+    "dsp_high_pass_cutoff_hz": 0.5,
+    "dsp_low_pass_cutoff_hz": 50.0,
+    "powerline_filter_hz": 60
+  }
 }
