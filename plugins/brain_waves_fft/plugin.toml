@@ -1,0 +1,8 @@
+id = "brain_waves_fft"
+name = "Brain Waves FFT"
+version = "0.1.0"
+author = "Elata"
+
+[ui]
+component = "FftDisplay"
+path = "ui/FftDisplay.tsx"

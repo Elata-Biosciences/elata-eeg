@@ -15,10 +15,10 @@ bash install.sh
 # Stop kiosk mode
 bash stop.sh
 
-# Term 1, driver
-cd driver; cargo build
-# Term 2, daemon
-cd daemon; cargo build; cargo run
+# Term 1, sensors
+cd crates/sensors; cargo build
+# Term 2, device daemon
+cd crates/device; cargo build; cargo run
 # Term 3, kiosk
 cd kiosk; npm run dev
 ```
@@ -84,36 +84,48 @@ bash rebuild.sh
 
 ## Software Stack
 
-- **Operating System**: Raspberry Pi OS (Debian-based)  
-- **Rust Toolchain**: Installed via [rustup](https://rustup.rs)  
-- **rppal**: Rust crate for Raspberry Pi GPIO/SPI/I2C/Serial  
-- **Logging & Error Handling**: `env_logger`, `anyhow`  
-- **Version Control**: Git + GitHub  
+- **Operating System**: Raspberry Pi OS (Debian-based)
+- **Rust Toolchain**: Installed via [rustup](https://rustup.rs)
+- **Frontend**: Next.js Kiosk application with WebSocket communication
+- **Backend**: Rust workspace with sensor and device crates
+- **Hardware Interface**: `rppal` crate for Raspberry Pi GPIO/SPI/I2C/Serial
+- **Plugin System**: Modular DSP and UI plugins
+- **Version Control**: Git + GitHub
 - **License**: GPLv3 (Strong Copyleft)
 
 ---
 
-## System Architecture
-           EEG Electrodes
-                 |
-                 |  (analog signals)
-                 v
-   [ADS1299 EEGFE Board] -- SPI -- [Raspberry Pi 5]
-                 |
-                 | (digital comm. over SPI)
-                 v
-      [Rust-based Data Acquisition]
-                 |
-                 v
-      [Filtering + Signal Processing]
-                 |
-                 v
-   [GUI / Terminal Output / Logging]
+## System Architecture (v0.6)
 
+```
+EEG Electrodes
+     |
+     | (analog signals)
+     v
+[ADS1299 Board] --SPI--> [Sensors Crate] --AdcData--> [Device Daemon]
+                              |                            |
+                              |                            v
+                              |                      [Plugin Manager]
+                              |                            |
+                              |                            v
+                              |                      [Active Plugin]
+                              |                            |
+                              v                            v
+                        [Raw Data Stream]           [Processed Data]
+                                                          |
+                                                          v
+                                                   [Kiosk WebSocket]
+                                                          |
+                                                          v
+                                                   [Next.js Frontend]
+```
 
-- The Pi’s SPI bus communicates with the ADS1299 board to configure channels, read samples, etc.
-- Real-time data is processed in Rust (filtering, buffering).
-- Output can be saved or displayed locally on Pi’s screen.
+**Key Components:**
+- **Sensors Crate** (`crates/sensors/`): Pure hardware interface, no DSP logic
+- **Device Daemon** (`crates/device/`): Orchestrates sensor and single active plugin
+- **Plugin System**: Each plugin contains its own DSP logic and UI components
+- **Kiosk**: Next.js application that loads plugin UIs dynamically
+- **Single Plugin Model**: Only one plugin active at a time for simplicity
 
 ---
 
@@ -146,18 +158,34 @@ bash rebuild.sh
 
 ## Building & Running
 
-1. Compile
+1. **Build the workspace**
    ```bash
+   # Build all crates
    cargo build
+   
+   # Or build individual crates
+   cd crates/sensors && cargo build
+   cd crates/device && cargo build
    ```
-2. Run
+
+2. **Run the device daemon**
    ```bash
+   cd crates/device
    cargo run
    ```
 
-3. Expected Behavior
-   - On first run, it will attempt to communicate with the ADS1299 registers.
-   - You should see debug logs in the console (use `RUST_LOG=debug cargo run` for more details).
+3. **Run the kiosk (separate terminal)**
+   ```bash
+   cd kiosk
+   npm install
+   npm run dev
+   ```
+
+4. **Expected Behavior**
+   - Device daemon starts and initializes the sensor hardware
+   - Plugin manager loads (currently basic implementation)
+   - Kiosk provides web interface at http://localhost:3000
+   - WebSocket communication between daemon and kiosk
 
 ## Usage Instructions
 

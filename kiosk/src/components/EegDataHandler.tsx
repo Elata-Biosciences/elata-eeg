@@ -9,20 +9,18 @@
  * render flags and simplifying the overall rendering process.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
     DEFAULT_SAMPLE_RATE,
     DEFAULT_BATCH_SIZE,
     WINDOW_DURATION,
-    FFT_WINDOW_DURATION_MS, // Import from constants
-    FFT_HOP_DURATION_MS     // Import from constants
 } from '../utils/eegConstants';
  
 interface EegDataHandlerProps {
   config: any;
   onDataUpdate: (dataReceived: boolean) => void;
   onError?: (error: string) => void;
-  linesRef: React.MutableRefObject<any[]>; // Array of WebglStep instances (e.g., WebglLineRoll)
+  onSamples: (samples: { values: Float32Array; timestamps: BigUint64Array }[]) => void;
   lastDataChunkTimeRef: React.MutableRefObject<number[]>; // Ref holding array of per-channel timestamps
   latestTimestampRef: React.MutableRefObject<number>; // Ref holding the single latest timestamp
   debugInfoRef: React.MutableRefObject<{
@@ -30,18 +28,21 @@ interface EegDataHandlerProps {
     packetsReceived: number;
     samplesProcessed: number;
   }>; // Ref for debug information including packet count
-  onFftData?: (channelIndex: number, fftOutput: number[]) => void; // New callback for FFT data
+  onFftData?: (data: any) => void; // Updated callback for structured FFT data
+  subscriptions?: string[]; // Made optional as it's no longer used for data handling
 }
 
 export function useEegDataHandler({
   config,
   onDataUpdate,
   onError,
-  linesRef,
+  onSamples,
   lastDataChunkTimeRef,
   latestTimestampRef,
   debugInfoRef,
-  onFftData // Destructure the new FFT callback
+  onFftData,
+  // subscriptions now has a default value as it's optional
+  subscriptions = [],
 }: EegDataHandlerProps) {
   const [status, setStatus] = useState('Connecting...');
   const wsRef = useRef<WebSocket | null>(null);
@@ -50,283 +51,345 @@ export function useEegDataHandler({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
   const isProduction = process.env.NODE_ENV === 'production';
+  const logCounterRef = useRef(0); // Ref for throttling logs
+
+  // --- Refs for props to ensure stability ---
+  const configRef = useRef(config);
+  const onDataUpdateRef = useRef(onDataUpdate);
+  const onErrorRef = useRef(onError);
+  const onFftDataRef = useRef(onFftData);
+  const onSamplesRef = useRef(onSamples);
+  const subscriptionsRef = useRef(subscriptions);
+
+  // Update refs whenever props change
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
+    onDataUpdateRef.current = onDataUpdate;
+  }, [onDataUpdate]);
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  useEffect(() => {
+    onFftDataRef.current = onFftData;
+  }, [onFftData]);
+
+  useEffect(() => {
+    onSamplesRef.current = onSamples;
+  }, [onSamples]);
+
+  // The subscription logic is no longer needed, as the new protocol sends all data
+  // over a single binary WebSocket connection. The client will parse topics locally.
+  useEffect(() => {
+   subscriptionsRef.current = subscriptions;
+  }, [subscriptions]);
+
+
+  // Enhanced debugging state
+  const [debugInfo, setDebugInfo] = useState({
+    connectionAttempts: 0,
+    lastConnectionTime: 0,
+    messagesReceived: 0,
+    lastMessageTime: 0,
+    lastMessageType: 'none',
+    lastError: '',
+    binaryPacketsReceived: 0,
+    textPacketsReceived: 0,
+  });
   // No queues or animation frame needed for immediate display
   const sampleBuffersRef = useRef<Float32Array[]>([]); // For raw data display
-  // const fftBuffersRef = useRef<number[][]>([]); // Removed: FFT calculation is now backend-driven
-  // const samplesSinceLastFftRef = useRef<number[]>([]); // Removed: FFT calculation is now backend-driven
-  
-  // createMessageHandler logic is now moved inside connectWebSocket
-
-
-
-  /**
-   * Function to establish WebSocket connection with automatic reconnection
-   */
-  const connectWebSocket = useCallback((currentConfig: any) => {
-    // Clear any existing reconnect timeout
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    
-    // Close existing connection if any
-    if (wsRef.current) {
-      try {
-        wsRef.current.close();
-      } catch (e) {
-        // Ignore errors on close
-      }
-    }
-    
-    setStatus('Connecting...');
-    
-    // Use currentConfig passed to the function
-    if (!currentConfig) {
-        console.warn("connectWebSocket called without config.");
-        return;
-    }
- 
-    const wsHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    // Use the filtered data endpoint instead of the raw /eeg endpoint
-    const ws = new WebSocket(`ws://${wsHost}:8080/ws/eeg/data__basic_voltage_filter`);
-    wsRef.current = ws;
-    
-    // Set binary type for WebSocket
-    ws.binaryType = 'arraybuffer';
-    
-    ws.onopen = () => {
-      setStatus('Connected');
-      reconnectAttemptsRef.current = 0; // Reset reconnect attempts on successful connection
-      if (!isProduction) {
-        console.log('WebSocket connection established');
-      }
-    };
-    
-    // --- WebSocket Message Handler ---
-    // Initialize queues based on channel count whenever config changes (handled in useEffect below)
-
-    const handleWebSocketMessage = (event: MessageEvent) => {
-      try {
-        // Handle JSON data from the filtered endpoint
-        if (typeof event.data === 'string') {
-          const filteredData = JSON.parse(event.data);
-          
-          // Handle error messages
-          if (filteredData.error) {
-            console.error("EEG driver error:", filteredData.error);
-            if (typeof onError === 'function') onError(`EEG driver error: ${filteredData.error}`);
-            return;
-          }
-
-          // Handle filtered voltage samples
-          if (filteredData.filtered_voltage_samples && Array.isArray(filteredData.filtered_voltage_samples)) {
-            const configuredChannelCount = currentConfig?.channels?.length || 0;
-            if (configuredChannelCount === 0) return;
-
-            const channelData = filteredData.filtered_voltage_samples;
-            if (channelData.length === 0) {
-              if (!isProduction) console.warn("Received packet with no filtered voltage samples.");
-              return;
-            }
-
-            const samplesPerChannel = channelData[0]?.length || 0;
-            if (samplesPerChannel <= 0) {
-              if (!isProduction) console.warn("Received packet with empty channel data.");
-              return;
-            }
-
-            // Ensure we have enough sample buffers
-            if (sampleBuffersRef.current.length < configuredChannelCount) {
-              sampleBuffersRef.current = Array(configuredChannelCount).fill(null).map((_, i) => sampleBuffersRef.current[i] || null);
-            }
-
-            for (let ch = 0; ch < Math.min(configuredChannelCount, channelData.length); ch++) {
-              let currentSampleBuffer = sampleBuffersRef.current[ch];
-
-              if (!currentSampleBuffer || currentSampleBuffer.length !== samplesPerChannel) {
-                currentSampleBuffer = new Float32Array(samplesPerChannel);
-                sampleBuffersRef.current[ch] = currentSampleBuffer;
-              }
-
-              // Copy filtered data to buffer
-              const channelSamples = channelData[ch];
-              for (let i = 0; i < samplesPerChannel; i++) {
-                const rawValue = channelSamples[i];
-                currentSampleBuffer[i] = isFinite(rawValue) ? rawValue : 0;
-                
-                // DEBUG: Log some sample values to understand the data range
-                if (ch === 0 && i < 3 && debugInfoRef.current.packetsReceived % 100 === 0) {
-                  console.log(`[EegDataHandler DEBUG FILTERED] Ch${ch} Sample${i}: ${rawValue} (finite: ${isFinite(rawValue)})`);
-                }
-              }
-
-              // Update timestamps
-              if (lastDataChunkTimeRef.current && lastDataChunkTimeRef.current[ch] !== undefined) {
-                lastDataChunkTimeRef.current[ch] = performance.now();
-              }
-
-              // Add data to WebGL lines
-              if (linesRef.current && linesRef.current[ch] && samplesPerChannel > 0) {
-                linesRef.current[ch].shiftAdd(currentSampleBuffer);
-              }
-            }
-
-            // Update global timestamp
-            if (latestTimestampRef) {
-              latestTimestampRef.current = performance.now();
-            }
-
-            // Update debug info
-            if (debugInfoRef) {
-              debugInfoRef.current.packetsReceived++;
-              debugInfoRef.current.lastPacketTime = performance.now();
-              debugInfoRef.current.samplesProcessed += samplesPerChannel * Math.min(configuredChannelCount, channelData.length);
-            }
-
-            if (typeof onDataUpdate === 'function') {
-              onDataUpdate(true);
-            }
-          }
-          return;
-        }
-
-        // Fallback: Handle binary data (in case we need to support both formats)
-        if (!(event.data instanceof ArrayBuffer)) {
-          return;
-        }
-        
-        console.warn("[EegDataHandler] Received binary data but expected JSON from filtered endpoint");
-
-        if (dataReceivedTimeoutRef.current) {
-          clearTimeout(dataReceivedTimeoutRef.current);
-        }
-        dataReceivedTimeoutRef.current = setTimeout(() => {
-          if (typeof onDataUpdate === 'function') {
-            onDataUpdate(false);
-          }
-        }, 1000);
-
-      } catch (error) {
-        console.error("Error parsing EEG binary data:", error);
-        if (typeof onError === 'function') onError(`Error parsing EEG data: ${error}`);
-      }
-    }; // End of handleWebSocketMessage
-
-    // Assign the raw message handler
-    ws.onmessage = handleWebSocketMessage;
-    // --- End of moved message handler logic ---
-    
-    ws.onclose = (event) => {
-      if (!isProduction) {
-        console.log(`WebSocket closed with code: ${event.code}, reason: ${event.reason}`);
-      }
-      
-      setStatus('Disconnected');
-      
-      // Implement exponential backoff for reconnection
-      const maxReconnectDelay = 5000; // Maximum delay of 5 seconds
-      const baseDelay = 500; // Start with 500ms delay
-      const reconnectDelay = Math.min(
-        maxReconnectDelay,
-        baseDelay * Math.pow(1.5, reconnectAttemptsRef.current)
-      );
-      
-      reconnectAttemptsRef.current++;
-      
-      if (!isProduction) {
-        console.log(`Attempting to reconnect in ${reconnectDelay}ms (attempt ${reconnectAttemptsRef.current})`);
-      }
-      
-      // Schedule reconnection
-      reconnectTimeoutRef.current = setTimeout(() => {
-        if (!isProduction) {
-          console.log('Attempting to reconnect...');
-        }
-        // Pass the config again when reconnecting
-        connectWebSocket(currentConfig);
-      }, reconnectDelay);
-    };
-    
-    ws.onerror = (error) => {
-      if (!isProduction) {
-        console.error('WebSocket error:', error);
-      }
-      // Don't update timestamp on error, just report it
-      // if (latestTimestampRef) {
-      //     latestTimestampRef.current = performance.now();
-      // }
-      if (typeof onError === 'function') onError(`WebSocket error: ${error}`);
-      // onclose will handle reconnection attempt
-    };
-
-  // Dependencies: Only include stable references or primitives if possible.
-  // config is passed directly when called.
-  // linesRef, lastDataChunkTimeRef, latestTimestampRef, debugInfoRef, onDataUpdate, onError, onFftData are refs/callbacks assumed stable.
-  }, [isProduction, linesRef, lastDataChunkTimeRef, latestTimestampRef, debugInfoRef, onDataUpdate, onError, onFftData]);
   
   /**
-   * Effect for managing WebSocket connection and sample processing interval.
+   * Main effect for WebSocket connection management.
+   * Runs only once on mount.
    */
+  // Create a stable key from the config properties that necessitate a WebSocket restart.
+  const configKey = useMemo(() => {
+    if (!config) return null;
+    // Sort channels to ensure ["0", "1"] and ["1", "0"] produce the same key
+    const channelKey = config.channels?.slice().sort().join(',') || '';
+    return `${config.sample_rate}-${channelKey}`;
+  }, [config]);
+
   useEffect(() => {
-    const currentConfig = config; // Capture config for this effect run
-    const numChannels = currentConfig?.channels?.length || 0;
-    const sampleRate = currentConfig?.sample_rate || DEFAULT_SAMPLE_RATE;
+    console.log(`[EegDataHandler] Effect running to establish WebSocket connection.`);
+    let isMounted = true;
 
-    // Initialize/Reset FFT buffers when config changes (e.g., channel count) - REMOVED
-    // if (numChannels > 0) {
-    //   fftBuffersRef.current = Array(numChannels).fill(null).map(() => []);
-    //   samplesSinceLastFftRef.current = Array(numChannels).fill(0);
-    // } else {
-    //   fftBuffersRef.current = [];
-    //   samplesSinceLastFftRef.current = [];
-    // }
- 
-    // --- Connect WebSocket ---
-    if (currentConfig) {
-      connectWebSocket(currentConfig);
-    }
-
-    // --- No Sample Processing Loop Needed ---
-    // Data is processed directly in handleWebSocketMessage
-
-    // --- Cleanup Function ---
-    return () => {
-      if (!isProduction) {
-        console.log("Cleaning up EegDataHandler effect...");
+    const connectWebSocket = () => {
+      // Use the ref to get the latest config without adding it as a dependency
+      const currentConfig = configRef.current;
+      
+      // If config isn't ready, wait and retry.
+      if (!currentConfig) {
+        console.warn("[EegDataHandler] Config not ready, scheduling reconnect.");
+        if (isMounted) {
+            reconnectTimeoutRef.current = setTimeout(connectWebSocket, 500);
+        }
+        return;
       }
 
-      // Clear reconnect timeout
+      // Clear any existing reconnect timeout
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
-        if (!isProduction) console.log("Reconnect timeout cleared.");
       }
-
-      // Clear data received timeout
-      if (dataReceivedTimeoutRef.current) {
-        clearTimeout(dataReceivedTimeoutRef.current);
-        dataReceivedTimeoutRef.current = null;
-        if (!isProduction) console.log("Data received timeout cleared.");
-      }
-
-      // Close WebSocket connection
+      
+      // Close existing connection if any
       if (wsRef.current) {
-        if (!isProduction) console.log("Closing WebSocket connection...");
         try {
-          wsRef.current.onclose = null; // Prevent reconnect logic during manual close
-          wsRef.current.onerror = null;
           wsRef.current.close();
         } catch (e) {
-          // Ignore errors during cleanup close
+          // Ignore errors on close
         }
+      }
+      
+      if (!isMounted) return;
+      setStatus('Connecting...');
+  
+      const wsHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+      const wsProtocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${wsProtocol}://${wsHost}:8080/ws/data`); // <-- Use the new endpoint
+      wsRef.current = ws;
+      
+      ws.binaryType = 'arraybuffer';
+      
+      ws.onopen = () => {
+        if (!isMounted) return;
+        setStatus('Connected');
+        reconnectAttemptsRef.current = 0;
+        const now = performance.now();
+        setDebugInfo(prev => ({
+          ...prev,
+          connectionAttempts: prev.connectionAttempts + 1,
+          lastConnectionTime: now,
+        }));
+        console.log(`[EegDataHandler] WebSocket connection established.`);
+
+        // No initial subscription message needed with the new protocol
+      };
+      
+      ws.onmessage = (event: MessageEvent) => {
+        if (!isMounted) return;
+
+        try {
+          const now = performance.now();
+          onDataUpdateRef.current?.(true);
+          if (dataReceivedTimeoutRef.current) clearTimeout(dataReceivedTimeoutRef.current);
+          dataReceivedTimeoutRef.current = setTimeout(() => onDataUpdateRef.current?.(false), 1000);
+
+          setDebugInfo(prev => ({
+            ...prev,
+            messagesReceived: prev.messagesReceived + 1,
+            lastMessageTime: now,
+            lastMessageType: event.data instanceof ArrayBuffer ? 'binary' : 'string',
+          }));
+
+          if (event.data instanceof ArrayBuffer) {
+            setDebugInfo(prev => ({ ...prev, binaryPacketsReceived: prev.binaryPacketsReceived + 1 }));
+            const buffer = new Uint8Array(event.data);
+            if (buffer.length < 2) {
+              console.warn(`[EegDataHandler] Received packet too small for protocol header: ${buffer.length} bytes`);
+              return;
+            }
+
+            const version = buffer[0];
+            const topic = buffer[1];
+            const payload = buffer.slice(2); // Zero-copy view of the payload
+
+            if (version !== 1) {
+              console.error(`[EegDataHandler] Received unsupported protocol version: ${version}`);
+              return;
+            }
+
+            switch (topic) {
+              case 0: // FilteredEeg
+                handleEegPayload(payload);
+                break;
+              case 1: // Fft
+                handleFftPayload(payload);
+                break;
+              case 255: // Log
+                handleLogPayload(payload);
+                break;
+              default:
+                console.warn(`[EegDataHandler] Received message with unknown topic ID: ${topic}`);
+            }
+          } else {
+            // This path can be used for legacy text messages or control signals if needed.
+            console.log("[EegDataHandler] Received non-binary message:", event.data);
+          }
+        } catch (error) {
+          console.error("[EegDataHandler] Error in onmessage handler:", error);
+          setDebugInfo(prev => ({
+            ...prev,
+            lastError: error instanceof Error ? error.message : String(error),
+          }));
+          onErrorRef.current?.(`Error processing data: ${error}`);
+        }
+      };
+
+      const handleEegPayload = (payload: Uint8Array) => {
+        const currentConfig = configRef.current;
+        const configuredChannelCount = currentConfig?.channels?.length || 0;
+        if (configuredChannelCount === 0) return;
+
+        const dataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        let offset = 0;
+
+        if (payload.length < 4) {
+          console.warn(`[EegDataHandler] EEG payload too small for header: ${payload.length} bytes`);
+          return;
+        }
+
+        const totalSamples = dataView.getUint32(offset, true);
+        offset += 4;
+
+        const timestampBytes = totalSamples * 8;
+        const sampleBytes = totalSamples * 4;
+
+        if (payload.length < offset + timestampBytes + sampleBytes) {
+          console.warn(`[EegDataHandler] Incomplete EEG payload. Expected ${offset + timestampBytes + sampleBytes}, got ${payload.length}`);
+          return;
+        }
+
+        const timestamps = new BigUint64Array(totalSamples);
+        for (let i = 0; i < totalSamples; i++) {
+          timestamps[i] = dataView.getBigUint64(offset, true);
+          offset += 8;
+        }
+
+        const samples = new Float32Array(totalSamples);
+        for (let i = 0; i < totalSamples; i++) {
+          samples[i] = dataView.getFloat32(offset, true);
+          offset += 4;
+        }
+
+        const batchSize = totalSamples / configuredChannelCount;
+        if (batchSize === 0 || !Number.isInteger(batchSize)) {
+          console.warn(`[EegDataHandler] Invalid batch size for EEG data: ${batchSize}`);
+          return;
+        }
+
+        const allChannelSamples: { values: Float32Array; timestamps: BigUint64Array }[] = [];
+        for (let ch = 0; ch < configuredChannelCount; ch++) {
+          const channelValues = new Float32Array(batchSize);
+          const channelTimestamps = new BigUint64Array(batchSize);
+          for (let i = 0; i < batchSize; i++) {
+            const sampleIndex = i * configuredChannelCount + ch;
+            channelValues[i] = samples[sampleIndex];
+            channelTimestamps[i] = timestamps[sampleIndex];
+          }
+          allChannelSamples.push({ values: channelValues, timestamps: channelTimestamps });
+        }
+
+        if (allChannelSamples.length > 0) {
+          onSamplesRef.current?.(allChannelSamples);
+        }
+
+        if (latestTimestampRef) latestTimestampRef.current = performance.now();
+        if (debugInfoRef) {
+          debugInfoRef.current.packetsReceived++;
+          debugInfoRef.current.lastPacketTime = performance.now();
+          debugInfoRef.current.samplesProcessed += batchSize * configuredChannelCount;
+        }
+      };
+
+      const handleFftPayload = (payload: Uint8Array) => {
+        try {
+          const text = new TextDecoder().decode(payload);
+          const fftData = JSON.parse(text);
+          onFftDataRef.current?.(fftData);
+        } catch (error) {
+          console.error("[EegDataHandler] Error parsing FFT payload:", error);
+        }
+      };
+
+      const handleLogPayload = (payload: Uint8Array) => {
+        try {
+          const text = new TextDecoder().decode(payload);
+          console.log(`[EEG-DEVICE-LOG] ${text}`);
+        } catch (error) {
+          console.error("[EegDataHandler] Error parsing log payload:", error);
+        }
+      };
+
+      ws.onclose = (event) => {
+        if (!isMounted) return;
+        
+        // Log all unexpected closures, but handle them differently
+        const isExpectedClosure = event.code === 1000 || event.code === 1005;
+        const isUnexpectedClosure = event.code === 1006 || event.code === 1001;
+        
+        if (!isExpectedClosure) {
+          console.log(`[EegDataHandler] WebSocket closed with code: ${event.code}, reason: ${event.reason || 'No reason provided'}`);
+        }
+        
+        setStatus('Disconnected');
+        
+        // Don't reconnect for expected closures (normal shutdown)
+        if (isExpectedClosure) {
+          console.log('[EegDataHandler] WebSocket closed normally, not reconnecting');
+          return;
+        }
+        
+        // For unexpected closures (like 1006), implement smarter reconnection
+        const maxReconnectDelay = 5000;
+        const baseDelay = isUnexpectedClosure ? 1000 : 500; // Longer delay for unexpected closures
+        const reconnectDelay = Math.min(
+          maxReconnectDelay,
+          baseDelay * Math.pow(1.5, reconnectAttemptsRef.current)
+        );
+        
+        reconnectAttemptsRef.current++;
+        
+        // Limit reconnection attempts for persistent issues
+        if (reconnectAttemptsRef.current > 10) {
+          console.error('[EegDataHandler] Too many reconnection attempts, stopping');
+          onErrorRef.current?.('WebSocket connection failed after multiple attempts');
+          return;
+        }
+        
+        // Only log if we are actually going to try reconnecting
+        if (isMounted) {
+          console.log(`[EegDataHandler] Attempting to reconnect in ${reconnectDelay}ms (attempt ${reconnectAttemptsRef.current})`);
+          reconnectTimeoutRef.current = setTimeout(connectWebSocket, reconnectDelay);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        if (!isMounted) return;
+        console.error('WebSocket error:', error);
+        onErrorRef.current?.(`WebSocket error: ${error}`);
+      };
+    };
+
+    connectWebSocket();
+
+    return () => {
+      isMounted = false;
+      console.log(`[EegDataHandler] Cleaning up WebSocket effect.`);
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (dataReceivedTimeoutRef.current) {
+        clearTimeout(dataReceivedTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.close();
         wsRef.current = null;
       }
     };
-  // Dependencies: Re-run effect if config changes that affect connection or processing rate/channels.
-  // Also include connectWebSocket as it's defined outside but used inside.
-  // onFftData is added to dependencies of connectWebSocket, so not strictly needed here if connectWebSocket handles it.
-  // However, including config directly ensures re-initialization of FFT buffers if channel count changes.
-  }, [config, connectWebSocket, isProduction, linesRef, latestTimestampRef, debugInfoRef]);
-  // Return status (FPS is now implicitly handled by sample rate)
-  return { status };
+  }, []); // Re-run effect only once on mount
+  // Return status and debug info
+  return {
+    status,
+    debugInfo: !isProduction ? debugInfo : undefined
+  };
 }

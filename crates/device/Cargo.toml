@@ -1,0 +1,41 @@
+[package]
+name = "adc_daemon"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["brain_waves_fft_feature"]
+brain_waves_fft_feature = ["dep:brain_waves_fft_plugin"]
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7" # Added for CancellationToken
+async-trait = "0.1" # Added for async trait support
+anyhow = "1.0" # Added for error handling
+tracing = "0.1" # Added for structured logging
+eeg_sensor = { path = "../sensors" }
+eeg_types = { path = "../eeg_types" }
+csv_recorder_plugin = { path = "../../plugins/csv_recorder" }
+basic_voltage_filter_plugin = { path = "../../plugins/basic_voltage_filter" }
+brain_waves_fft_plugin = { path = "../../plugins/brain_waves_fft", optional = true }
+warp = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8" # Added for plugin manifest parsing
+futures-util = "0.3"
+csv = "1.2"
+chrono = "0.4"
+env_logger = "0.10" # Added logger
+log = "0.4" # Added for logging
+nix = { version = "0.27", features = ["signal"] }
+uuid = { version = "1.0", features = ["v4"] }
+bytes = "1.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"
+bytes = "1.0"
+
+[[bin]]
+name = "eeg_daemon"
+path = "src/main.rs"

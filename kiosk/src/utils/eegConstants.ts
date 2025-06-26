@@ -19,14 +19,10 @@ export const BASE_CHANNEL_COLORS = [
   [0.55, 0.76, 0.29, 1]  // #8bc34a - Light Green
 ];
 
+// TODO - code keeps changing. either make it use TIME_TICKS or SAMPLES_PER_DISPLAY_FRAME. can't be both at once
 export const VOLTAGE_TICKS = [-1.5, -0.75, 0, 0.75, 1.5];
 export const TIME_TICKS = [0, 0.5, 1.0, 1.5, 2.0];
 
-// FFT Related Constants
-export const FFT_WINDOW_DURATION_MS = 2000; // Duration of the window for FFT calculation in milliseconds
-export const FFT_HOP_DURATION_MS = 1000;    // Hop size or interval between FFT calculations in milliseconds
-export const FFT_WINDOW_TYPE = 'hann';      // Windowing function to apply before FFT (e.g., 'hann', 'hamming')
-
-// Constants for FFT display range (can be adjusted as needed)
-export const FFT_MIN_FREQ_HZ = 1;  // Minimum frequency to display on the FFT plot in Hz
-export const FFT_MAX_FREQ_HZ = 70; // Maximum frequency to display on the FFT plot in Hz
+// Display timing constants for smooth real-time visualization
+export const DISPLAY_FPS = 60; // Target display frame rate
+export const DISPLAY_FRAME_INTERVAL_MS = 1000 / DISPLAY_FPS; // ~16.67ms between display frames

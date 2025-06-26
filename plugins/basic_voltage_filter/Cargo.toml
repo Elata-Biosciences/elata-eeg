@@ -1,0 +1,16 @@
+[package]
+name = "basic_voltage_filter_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = "0.7"
+async-trait = "0.1"
+anyhow = "1.0"
+tracing = "0.1"
+bytes = "1.0"
+
+# Local dependencies
+eeg_types = { path = "../../crates/eeg_types" }
+eeg_sensor = { path = "../../crates/sensors" }
