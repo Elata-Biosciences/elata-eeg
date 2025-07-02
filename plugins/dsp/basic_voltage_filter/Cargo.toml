@@ -1,8 +1,0 @@
-[package]
-name = "basic_voltage_filter"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-biquad = "0.4" # Or the version currently used
-# Add any other direct dependencies from the original filters.rs

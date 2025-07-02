@@ -1,0 +1,38 @@
+[package]
+name = "eeg_sensor"
+version = "0.1.0"
+edition = "2021"
+default-run = "eeg_sensor_bin"
+
+[lib]
+name = "eeg_sensor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eeg_sensor_bin"
+path = "src/main.rs"
+
+[[bin]]
+name = "ads1299_test"
+path = "src/ads1299/test.rs"
+
+[dependencies]
+tokio = { version = "1.28.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7.14"
+rand = "0.8"
+libc = "0.2"
+nix = "0.26"
+clap = { version = "4.5", features = ["derive"] } # for passing the mock data flag
+rppal = { version = "0.22.1", features = ["hal"] }
+aligned-utils = "1.0"
+# biquad = "0.5" # Removed as per DSP refactor plan
+# rustfft = "6.1" # Removed as per DSP refactor plan
+rand_distr = "0.4"
+thiserror = "1.0"
+async-trait = "0.1.68"
+log = { version = "0.4", features = ["max_level_trace", "release_max_level_warn"] }
+futures = "0.3"
+once_cell = "1.18"
+lazy_static = "1.4.0"
+serde = { version = "1.0", features = ["derive"] }
+eeg_types = { path = "../eeg_types" }

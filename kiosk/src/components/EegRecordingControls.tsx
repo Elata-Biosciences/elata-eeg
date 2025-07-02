@@ -12,7 +12,6 @@ export default function EegRecordingControls() {
     isStartRecordingPending,
   } = useCommandWebSocket();
 
-  console.log('[EegRecordingControls] isStartRecordingPending before return:', isStartRecordingPending);
 
   return (
     <button
@@ -20,7 +19,6 @@ export default function EegRecordingControls() {
       disabled={!wsConnected || isStartRecordingPending}
       className={`px-4 py-1 rounded-md flex items-center ${
         ((value) => {
-          console.log('[EegRecordingControls] isStartRecordingPending for className:', value);
           return !wsConnected
             ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
             : value

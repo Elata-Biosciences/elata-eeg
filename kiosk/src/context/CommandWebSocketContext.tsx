@@ -30,56 +30,64 @@ export const CommandWebSocketProvider = ({
 
   useEffect(() => {
     const wsHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    const newWs = new WebSocket(`ws://${wsHost}:8080/command`);
+    const wsProtocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const newWs = new WebSocket(`${wsProtocol}://${wsHost}:8080/command`);
  
     newWs.onopen = () => {
-      console.log('Command WebSocket connected');
+      console.log('[Command] WebSocket connected.');
       setWsConnected(true);
     };
 
     newWs.onmessage = (event) => {
+      console.log(`[Command] Received message:`, event.data);
       try {
         const response = JSON.parse(event.data);
 
         if (response.status === 'ok') {
-          const recording = response.message.startsWith('Currently recording');
-          const failedToStart = response.message.includes('Failed to start recording'); // Or other relevant error messages
+          const isRecording = response.message.startsWith('Currently recording');
+          const isStopped = response.message.includes('Recording stopped');
+          const failedToStart = response.message.includes('Failed to start recording');
           let filePath = null;
 
-          if (recording) {
+          if (isRecording) {
             const match = response.message.match(/Currently recording to (.+)/);
             if (match && match[1]) {
               filePath = match[1];
+              console.log(`[Command] Recording started. File path: ${filePath}`);
             }
+          } else if (isStopped) {
+            console.log(`[Command] Recording stopped.`);
           }
 
           setRecordingStatus(response.message);
           setRecordingFilePath(filePath);
 
-          if (recording || failedToStart) {
-            console.timeEnd('startRecordingCommand');
-            setIsStartRecordingPending(false);
+          // Clear pending state if we received a definitive response
+          if (isRecording || failedToStart || isStopped) {
+            if(isStartRecordingPending) {
+              console.timeEnd('startRecordingCommand');
+              setIsStartRecordingPending(false);
+            }
           }
         } else {
-          console.error('Command error:', response.message);
-          // Potentially clear pending state if the error is related to a start command
-          if (isStartRecordingPending) { // Check if a start command was pending
-             console.timeEnd('startRecordingCommand'); // End timer if it was running
+          console.error('[Command] Received error:', response.message);
+          if (isStartRecordingPending) {
+             console.timeEnd('startRecordingCommand');
              setIsStartRecordingPending(false);
           }
         }
       } catch (error) {
-        console.error('Error parsing command response:', error);
+        console.error('[Command] Error parsing response JSON:', error);
       }
     };
 
     newWs.onclose = () => {
-      console.log('Command WebSocket disconnected');
+      console.log('[Command] WebSocket disconnected.');
       setWsConnected(false);
     };
 
     newWs.onerror = (error) => {
-      console.error('Command WebSocket error:', error);
+      console.error('[Command] WebSocket error:', error);
       setWsConnected(false);
     };
 
@@ -93,24 +101,25 @@ export const CommandWebSocketProvider = ({
   const startRecording = useCallback(() => {
     if (ws && ws.readyState === WebSocket.OPEN && !isStartRecordingPending) {
       setIsStartRecordingPending(true);
+      console.log('[Command] Sending "start" command...');
       console.time('startRecordingCommand');
-      console.log('Attempting to start recording...');
       ws.send(JSON.stringify({ command: 'start' }));
     }
   }, [ws, isStartRecordingPending]);
 
   const stopRecording = useCallback(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      console.log('[Command] Sending "stop" command...');
       ws.send(JSON.stringify({ command: 'stop' }));
     }
   }, [ws]);
 
   const sendPowerlineFilterCommand = useCallback((value: number | null) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      console.log(`Sending set_powerline_filter command with value: ${value}`);
+      console.log(`[Command] Sending "set_powerline_filter" command with value: ${value}`);
       ws.send(JSON.stringify({ command: 'set_powerline_filter', value: value }));
     } else {
-      console.warn('Command WebSocket not open, cannot send set_powerline_filter command.');
+      console.warn('[Command] WebSocket not open, cannot send "set_powerline_filter" command.');
     }
   }, [ws]);
 

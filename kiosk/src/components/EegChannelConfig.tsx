@@ -30,52 +30,7 @@ export default function EegChannelConfig({ className = '' }: ChannelConfigProps)
 
   // Connect to the config WebSocket
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8080/config');
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      if (!isProduction) console.log('Channel Config WebSocket: Connection opened');
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        // Check if this is a response message
-        if (data.status) {
-          if (data.status === 'ok') {
-            setMessage({ text: data.message, type: 'success' });
-            setIsUpdating(false);
-          } else if (data.status === 'error') {
-            setMessage({ text: data.message, type: 'error' });
-            setIsUpdating(false);
-          }
-        } 
-        // If it's a config update, the EegConfig provider will handle it
-      } catch (error) {
-        console.error('Error parsing config data:', error);
-      }
-    };
-
-    ws.onclose = () => {
-      if (!isProduction) console.log('Channel Config WebSocket: Connection closed');
-      wsRef.current = null;
-    };
-
-    ws.onerror = (error) => {
-      console.error('Channel Config WebSocket error:', error);
-      setMessage({ 
-        text: 'Connection error. Please try again later.', 
-        type: 'error' 
-      });
-    };
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
+    // WebSocket connection logic removed
   }, [isProduction]);
 
   // Handle channel selection change

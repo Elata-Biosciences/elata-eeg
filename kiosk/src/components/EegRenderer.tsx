@@ -1,255 +1,191 @@
 'use client';
 
-import React, { useEffect, useRef, useCallback, useState } from 'react';
-// Keep ColorRGBA for potential future use or if setLineColor gets fixed
-/* eslint-disable @typescript-eslint/ban-ts-comment */
-// @ts-ignore: WebglLine is missing from types but exists at runtime
-import { WebglPlot, ColorRGBA, WebglStep } from 'webgl-plot';
-// Import getChannelColor for setting colors here
-import { getChannelColor } from '../utils/colorUtils';
+import React, {useRef, useEffect} from 'react';
+import {getChannelColor} from '../utils/colorUtils';
+import {useDataBuffer} from '../hooks/useDataBuffer';
+import {SampleChunk} from '../types/eeg';
 
-interface EegRendererProps {
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  dataRef: React.RefObject<any>; // Re-added as required prop
-  config: any;
-  latestTimestampRef: React.MutableRefObject<number>;
-  debugInfoRef: React.MutableRefObject<{
-    lastPacketTime: number;
-    packetsReceived: number;
-    samplesProcessed: number;
-  }>;
-  // containerRef is no longer needed here, dimensions are passed directly
-  linesReady: boolean; // Add prop to signal when lines are ready
-  dataVersion: number; // Add prop to track data updates
-  targetFps?: number; // Optional target FPS for rendering
-  containerWidth: number; // New prop for container width
-  containerHeight: number; // New prop for container height
+const VS = `
+attribute vec2 a_xy;                // (sampleIndex, value)
+uniform vec2  u_res;                // canvas resolution
+uniform vec3  u_scrollScaleOffset;  // (xScale, yScale, yOffset)
+void main() {
+  vec2 pos = vec2(
+    a_xy.x * u_scrollScaleOffset.x,             // scale time
+    a_xy.y * u_scrollScaleOffset.y +            // scale EEG amp
+      u_scrollScaleOffset.z);                   // move to channel band
+  vec2 clip = (pos / u_res) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+}
+`;
+
+const FS = `
+precision mediump float;
+uniform vec4 u_color;
+void main() { gl_FragColor = u_color; }
+`;
+
+interface Props {
+  isActive: boolean;
+  config: {channels: number[]; samplesPerLine?: number; ampScale?: number};
+  dataBuffer: ReturnType<typeof useDataBuffer<SampleChunk>>;
+  width: number;
+  height: number;
+  uiVoltageScaleFactor: number;
 }
 
 export const EegRenderer = React.memo(function EegRenderer({
-  canvasRef,
-  dataRef, // Add dataRef prop here
+  isActive,
   config,
-  latestTimestampRef,
-  debugInfoRef,
-  // containerRef, // Removed
-  linesReady, // Destructure linesReady
-  dataVersion, // Destructure dataVersion
-  targetFps,
-  containerWidth, // Destructure new prop
-  containerHeight // Destructure new prop
-}: EegRendererProps) {
-  const wglpRef = useRef<WebglPlot | null>(null);
-  // Array of WebglStep instances, one per channel
-  // const linesRef = useRef<WebglStep[] | null>(null); // Removed - Use dataRef prop instead
-  const animationFrameRef = useRef<number | null>(null);
-  const isInitializedRef = useRef<boolean>(false);
-  // const [canvasSized, setCanvasSized] = useState<boolean>(false); // Removed - use containerWidth/Height props
-  // Removed wglpInstance state, reverting to refs
-  // Last data chunk timestamps per channel
-  const lastDataChunkTimeRef = useRef<number[]>([]);
-  const lastRenderTimeRef = useRef<number>(0); // For FPS throttling
+  dataBuffer,
+  width,
+  height,
+  uiVoltageScaleFactor,
+}: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const glRef     = useRef<WebGLRenderingContext | null>(null);
+  const program   = useRef<WebGLProgram | null>(null);
+  const location  = useRef<{
+    pos: number; res: WebGLUniformLocation | null;
+    sso: WebGLUniformLocation | null; col: WebGLUniformLocation | null;
+  }>({pos:-1,res:null,sso:null,col:null});
+  const vbos      = useRef<WebGLBuffer[]>([]);
+  const cpuY      = useRef<Float32Array[]>([]);
+  const rafId     = useRef<number>(0);
 
-  const numChannels = config?.channels?.length ?? 8;
+  const NCH   = config.channels.length;
+  const NPTS  = config.samplesPerLine ?? 1024;
+  const YSCL  = 1000000.0*(uiVoltageScaleFactor ?? 0.01);
 
-  // Render loop using single WebglLineRoll with addPoints
-  const renderLoop = useCallback(() => {
-    animationFrameRef.current = requestAnimationFrame(renderLoop); // Request next frame immediately
-
-    if (!wglpRef.current || !dataRef.current || !isInitializedRef.current || numChannels === 0) { // Use dataRef
-      return;
-    }
-  
-    const wglp = wglpRef.current;
-    const lines = dataRef.current; // Use dataRef
-    const now = performance.now();
-  
-    // FPS Throttling Logic
-    if (targetFps && targetFps > 0) {
-      const frameInterval = 1000 / targetFps;
-      const elapsed = now - lastRenderTimeRef.current;
-
-      if (elapsed < frameInterval) {
-        return; // Skip this frame
-      }
-      lastRenderTimeRef.current = now - (elapsed % frameInterval); // Adjust for consistent timing
-    } else {
-      // No FPS target, or invalid target, render as fast as possible (synced with rAF)
-      lastRenderTimeRef.current = now;
-    }
-
-    // The following loop for offsetX is not strictly needed for wglp.update()
-    // but kept if any per-line logic might be re-introduced.
-    // If it's purely for wglp.update(), it can be removed.
-    for (let ch = 0; ch < numChannels; ch++) {
-      const line = lines[ch];
-      if (!line || line.numPoints === 0) continue; // Skip if line missing or has no points
-      // No need to set offsetX here anymore
-    }
-  
-    wglp.update();
-  
-  }, [numChannels, config, targetFps, dataRef, isInitializedRef]);
-
-
-  // Effect 1: Initialize WebGL Plot when canvas is ready and sized
+  /* ---------- init (once) ---------- */
   useEffect(() => {
-    // Skip if plot already exists, canvas missing, or container dimensions are not valid
-    const validDimensions = containerWidth > 0 && containerHeight > 0;
-    if (wglpRef.current || !canvasRef.current || !validDimensions || numChannels === 0) {
-      console.log(`[EegRenderer InitEffect1] Skipping plot creation (Plot Exists: ${!!wglpRef.current}, Canvas: ${!!canvasRef.current}, ValidDimensions: ${validDimensions} [${containerWidth}x${containerHeight}], Channels: ${numChannels}).`);
-      return;
-    }
+    if (!isActive || !canvasRef.current) return;
 
-    const canvas = canvasRef.current;
-    // Explicitly size the canvas using current props BEFORE initializing WebglPlot
-    const dpr = window.devicePixelRatio || 1;
-    const cssWidth = containerWidth;
-    const cssHeight = containerHeight; // Or a fraction if EegMonitor calculates it for aspect ratio
+    const gl = canvasRef.current.getContext('webgl');
+    if (!gl) return console.error('WebGL ctx failed');
+    glRef.current = gl;
 
-    const physicalWidth = Math.round(cssWidth * dpr);
-    const physicalHeight = Math.round(cssHeight * dpr);
-
-    // Check if canvas actually needs resizing before applying.
-    // This ensures that if the effect re-runs due to other dependency changes
-    // but the size is already correct, we don't unnecessarily manipulate the DOM.
-    if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
-      console.log(`[EegRenderer InitEffect1] Sizing canvas for initialization: ${cssWidth}x${cssHeight} (CSS), ${physicalWidth}x${physicalHeight} (Physical), DPR: ${dpr}`);
-      canvas.width = physicalWidth;
-      canvas.height = physicalHeight;
-      canvas.style.width = `${cssWidth}px`;
-      canvas.style.height = `${cssHeight}px`;
-    } else {
-      console.log(`[EegRenderer InitEffect1] Canvas already correctly sized for initialization: ${cssWidth}x${cssHeight} (CSS), ${physicalWidth}x${physicalHeight} (Physical), DPR: ${dpr}`);
-    }
-    
-    console.log("[EegRenderer InitEffect1] Initializing WebGL Plot instance (after explicit sizing)...");
-
-    try {
-      const wglp = new WebglPlot(canvas);
-      wglpRef.current = wglp; // Store in ref
-
-      wglp.gScaleX = 1;
-      wglp.gScaleY = 1;
-
-      isInitializedRef.current = true; // Mark plot as initialized using ref
-      console.log(`[EegRenderer InitEffect1] WebGL Plot initialized.`);
-
-      // Start render loop AFTER initialization
-      if (!animationFrameRef.current) {
-          animationFrameRef.current = requestAnimationFrame(renderLoop);
-          console.log(`[EegRenderer InitEffect1] Render loop started.`);
-      }
-
-    } catch (error) {
-      console.error("[EegRenderer InitEffect1] Error initializing WebGL Plot:", error);
-      wglpRef.current = null;
-      isInitializedRef.current = false; // Reset ref on error
-    }
-
-    // Cleanup for THIS effect (plot creation)
-    return () => {
-      console.log("[EegRenderer InitEffect1] Cleaning up WebGL Plot instance...");
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-      wglpRef.current = null; // Clear ref on cleanup
-      isInitializedRef.current = false; // Reset ref on cleanup
-      console.log("[EegRenderer InitEffect1] Plot instance cleanup complete.");
+    // build program
+    const compile = (type: number, src: string) => {
+      const s = gl.createShader(type)!; gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+        throw new Error(gl.getShaderInfoLog(s) ?? '');
+      return s;
     };
-    // Depend on canvasRef, numChannels, containerWidth, containerHeight, and renderLoop
-  }, [canvasRef, numChannels, containerWidth, containerHeight, renderLoop]);
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(prog) ?? '');
+    program.current = prog;
 
+    // locations
+    location.current.pos = gl.getAttribLocation(prog, 'a_xy');
+    location.current.res = gl.getUniformLocation(prog, 'u_res');
+    location.current.sso = gl.getUniformLocation(prog, 'u_scrollScaleOffset');
+    location.current.col = gl.getUniformLocation(prog, 'u_color');
 
-  // Effect 2: Add/Update lines when they are ready AND plot is initialized
+    /* VBO per channel, interleaved (x,y) */
+    for (let ch = 0; ch < NCH; ch++) {
+      const buf = gl.createBuffer()!;
+      const arr = new Float32Array(NPTS * 2);
+      for (let i = 0; i < NPTS; i++) arr[i * 2] = i; // x
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+      vbos.current.push(buf);
+      cpuY.current.push(arr); // keep same reference, we’ll mutate y’s
+    }
+
+    return () => {
+      cancelAnimationFrame(rafId.current);
+      vbos.current.forEach(b => gl.deleteBuffer(b));
+      gl.deleteProgram(prog);
+      vbos.current = []; cpuY.current = [];
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]); // ← run once while active
+
+  /* ---------- resize --------- */
   useEffect(() => {
-    // Use wglpRef
-    const wglp = wglpRef.current;
-
-    // Only proceed if plot is initialized (via ref) AND plot exists AND lines are ready
-    if (!isInitializedRef.current || !wglp || !linesReady) {
-        // console.log(`[EegRenderer InitEffect2] Skipping line addition (Initialized: ${isInitializedRef.current}, Plot Exists: ${!!wglp}, LinesReady: ${linesReady})`);
-        return;
-    }
-
-    // Check if dataRef has lines
-    const lines = dataRef.current;
-    if (!lines || lines.length === 0) {
-        console.warn("[EegRenderer InitEffect2] Lines are ready, but dataRef is empty. Cannot add lines.");
-        return;
-    }
-
-    console.log(`[EegRenderer InitEffect2] Adding/Updating ${lines.length} lines.`);
-
-    // Clear existing lines before adding new ones - IMPORTANT
-    // Assuming webgl-plot doesn't have a dedicated clear, we might need to remove lines individually
-    // or manage the lines array internally. For now, let's re-add, assuming addLine handles it.
-    // A better approach might involve checking if a line instance is already added.
-
-    lines.forEach((line: WebglStep, i: number) => {
-      if (line) {
-        try {
-          const colorTuple = getChannelColor(i);
-          line.color = new ColorRGBA(colorTuple[0], colorTuple[1], colorTuple[2], 1);
-        } catch (error) {
-          console.error(`[EegRenderer InitEffect2] Ch ${i}: Error setting color:`, error);
-          line.color = new ColorRGBA(1, 1, 1, 1); // fallback white
-        }
-        try {
-            (wglp as any).addLine(line);
-        } catch(addError) {
-            console.error(`[EegRenderer InitEffect2] Ch ${i}: Error adding line:`, addError, line);
-        }
-      } else {
-          console.warn(`[EegRenderer InitEffect2] Ch ${i}: Line instance is null or undefined in dataRef.`);
-      }
-    });
-
-    console.log(`[EegRenderer InitEffect2] Lines added/updated.`);
-    wglp.update(); // Update plot after adding/updating lines
-
-    // No cleanup needed specifically for adding lines, Effect 1 handles plot cleanup.
-
-  // Depend on plot initialization state, lines readiness state, and the actual dataRef content
-  // Check isInitializedRef.current inside, depend on linesReady and dataVersion
-  }, [linesReady, dataVersion]);
-
-
-  // Resize Effect: Now depends on containerWidth and containerHeight props
-  useEffect(() => {
-    if (!canvasRef.current || containerWidth === 0 || containerHeight === 0) {
-      // console.log(`[EegRenderer ResizeEffect] Skipping resize: Canvas: ${!!canvasRef.current}, ContainerDims: ${containerWidth}x${containerHeight}`);
-      return;
-    }
-
-    const canvas = canvasRef.current;
+    const gl = glRef.current; if (!gl) return;
     const dpr = window.devicePixelRatio || 1;
-    
-    // Use containerWidth and containerHeight directly for CSS size
-    const cssWidth = containerWidth;
-    const cssHeight = containerHeight; // Or a fraction if EegMonitor calculates it for aspect ratio
-
-    const physicalWidth = Math.round(cssWidth * dpr);
-    const physicalHeight = Math.round(cssHeight * dpr);
-
-    if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
-      console.log(`[EegRenderer ResizeEffect] Resizing canvas to: ${cssWidth}x${cssHeight} (CSS), ${physicalWidth}x${physicalHeight} (Physical), DPR: ${dpr}`);
-      canvas.width = physicalWidth;
-      canvas.height = physicalHeight;
-      canvas.style.width = `${cssWidth}px`;
-      canvas.style.height = `${cssHeight}px`;
-
-      if (wglpRef.current) {
-         wglpRef.current.gScaleY = 1; // Maintain consistent Y scaling
-         console.log(`[EegRenderer ResizeEffect] Kept gScaleY at 1 on resize.`);
-         wglpRef.current.update(); // Update plot after canvas resize
-      }
+    const w = Math.round(width  * dpr);
+    const h = Math.round(height * dpr);
+    const cvs = gl.canvas as HTMLCanvasElement;
+    if (cvs.width !== w || cvs.height !== h) {
+      cvs.width = w; cvs.height = h; gl.viewport(0,0,w,h);
     }
-    // No cleanup needed here as we are not using ResizeObserver anymore
-  }, [canvasRef, containerWidth, containerHeight]); // Depend on props
+    if (location.current.res) gl.useProgram(program.current!),
+      gl.uniform2f(location.current.res, w, h);
+  }, [width, height]);
 
+  /* ---------- render loop ---------- */
+  useEffect(() => {
+    if (!isActive || !glRef.current || !program.current) return;
+    const gl = glRef.current;
 
-  // Component renders nothing itself
-  return null;
+    const draw = () => {
+      // 1. ingest new EEG samples and shift data
+      const chunks = dataBuffer.getAndClearData();
+      if (chunks.length > 0) {
+        const batches: number[][] = Array.from({ length: NCH }, () => []);
+        chunks.forEach(chk =>
+          chk.samples.forEach(s => batches[s.channelIndex].push(s.value))
+        );
+
+        for (let ch = 0; ch < NCH; ch++) {
+          if (!batches[ch].length) continue;
+
+          const ary = cpuY.current[ch]; // Interleaved (x,y,x,y,...) array
+          const newVals = batches[ch];
+          const numNew = newVals.length;
+
+          if (numNew >= NPTS) {
+            // If new data is more than the buffer can hold, just take the latest
+            const latestVals = newVals.slice(-NPTS);
+            for (let i = 0; i < NPTS; i++) {
+              ary[i * 2 + 1] = latestVals[i]; // Update Y value
+            }
+          } else {
+            const numExisting = NPTS - numNew;
+            // Shift existing Y values to the left
+            for (let i = 0; i < numExisting; i++) {
+              ary[i * 2 + 1] = ary[(i + numNew) * 2 + 1];
+            }
+            // Append new Y values to the end
+            for (let i = 0; i < numNew; i++) {
+              ary[(numExisting + i) * 2 + 1] = newVals[i];
+            }
+          }
+
+          // Upload the entire modified buffer
+          gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[ch]);
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, ary);
+        }
+      }
+
+      // 2. draw
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(program.current!);
+      gl.enableVertexAttribArray(location.current.pos);
+      gl.vertexAttribPointer(location.current.pos, 2, gl.FLOAT, false, 0, 0);
+
+      const rowH = gl.canvas.height / NCH;
+      for (let ch = 0; ch < NCH; ch++) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[ch]);
+        const yOff = rowH * (ch + 0.5);
+        gl.uniform3f(location.current.sso!, gl.canvas.width / NPTS, YSCL, yOff);
+        const [r,g,b] = getChannelColor(ch);
+        gl.uniform4f(location.current.col!, r,g,b,1);
+        gl.drawArrays(gl.LINE_STRIP, 0, NPTS);
+      }
+
+      rafId.current = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(rafId.current);
+  }, [isActive, dataBuffer, NCH, NPTS, YSCL]);
+
+  return <canvas ref={canvasRef} className="w-full h-full" />;
 });
