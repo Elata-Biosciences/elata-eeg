@@ -1,12 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/device",
+    "crates/daemon",
     "crates/sensors",
     "crates/eeg_types",
+    "crates/pipeline",
     "plugins/basic_voltage_filter",
     "plugins/csv_recorder",
     "plugins/brain_waves_fft",
+    "crates/boards",
 ]
 
 [workspace.dependencies]
@@ -17,3 +19,4 @@ log = "0.4"
 anyhow = "1.0"
 async-trait = "0.1"
 tracing = "0.1"
+flume = { version = "0.11.1", features = ["select"] }

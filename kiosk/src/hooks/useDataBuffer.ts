@@ -1,39 +1,27 @@
-'use client';
+import {useRef, useCallback, useMemo} from 'react';
 
-import { useRef, useCallback, useMemo } from 'react';
-
-/**
- * A custom hook to manage a buffer for streaming data.
- * It's designed to decouple data reception from data processing/rendering.
- *
- * @template T The type of data chunks being buffered.
- * @returns A memoized object with methods to interact with the buffer.
- */
-export function useDataBuffer<T>() {
+export function useDataBuffer<T>(maxSize: number) {
   const buffer = useRef<T[]>([]);
 
-  const addData = useCallback((newData: T[]) => {
-    buffer.current.push(...newData);
-  }, []);
+  const addData = useCallback(
+    (newData: T[]) => {
+      buffer.current.push(...newData);
+      if (buffer.current.length > maxSize) {
+        buffer.current.splice(0, buffer.current.length - maxSize);
+      }
+    },
+    [maxSize]
+  );
 
   const getAndClearData = useCallback(() => {
-    if (buffer.current.length === 0) {
-      return [];
-    }
-    const bufferedData = buffer.current;
+    const data = buffer.current;
     buffer.current = [];
-    return bufferedData;
+    return data;
   }, []);
 
   const clear = useCallback(() => {
     buffer.current = [];
   }, []);
 
-  // Memoize the returned object to ensure its identity is stable across re-renders.
-  // This is crucial for preventing unnecessary effect runs in consuming components.
-  return useMemo(() => ({
-    addData,
-    getAndClearData,
-    clear,
-  }), [addData, getAndClearData, clear]);
+  return useMemo(() => ({addData, getAndClearData, clear}), [addData, getAndClearData, clear]);
 }

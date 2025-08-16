@@ -18,7 +18,7 @@ bash stop.sh
 # Term 1, sensors
 cd crates/sensors; cargo build
 # Term 2, device daemon
-cd crates/device; cargo build; cargo run
+cd crates/daemon; cargo build; cargo run
 # Term 3, kiosk
 cd kiosk; npm run dev
 ```
@@ -95,37 +95,54 @@ bash rebuild.sh
 
 ---
 
-## System Architecture (v0.6)
+## System Architecture (v3.0)
 
-```
-EEG Electrodes
-     |
-     | (analog signals)
-     v
-[ADS1299 Board] --SPI--> [Sensors Crate] --AdcData--> [Device Daemon]
-                              |                            |
-                              |                            v
-                              |                      [Plugin Manager]
-                              |                            |
-                              |                            v
-                              |                      [Active Plugin]
-                              |                            |
-                              v                            v
-                        [Raw Data Stream]           [Processed Data]
-                                                          |
-                                                          v
-                                                   [Kiosk WebSocket]
-                                                          |
-                                                          v
-                                                   [Next.js Frontend]
+The system is architected as a set of modular crates, each with a distinct responsibility. This separation of concerns ensures the system is extensible, maintainable, and testable.
+
+```mermaid
+graph TD
+    subgraph eeg_types
+        direction LR
+        A[eeg_types]
+    end
+
+    subgraph sensors
+        direction LR
+        B[sensors]
+    end
+
+    subgraph boards
+        direction LR
+        C[boards]
+    end
+
+    subgraph pipeline
+        direction LR
+        D[pipeline]
+    end
+
+    subgraph daemon
+        direction LR
+        E[daemon]
+    end
+
+    A --> B
+    A --> C
+    A --> D
+    B --> C
+    C --> E
+    D --> E
 ```
 
-**Key Components:**
-- **Sensors Crate** (`crates/sensors/`): Pure hardware interface, no DSP logic
-- **Device Daemon** (`crates/device/`): Orchestrates sensor and single active plugin
-- **Plugin System**: Each plugin contains its own DSP logic and UI components
-- **Kiosk**: Next.js application that loads plugin UIs dynamically
-- **Single Plugin Model**: Only one plugin active at a time for simplicity
+| Layer          | Owns                                                                            | Depends on                        | Notes                                   |
+| -------------- | ------------------------------------------------------------------------------- | --------------------------------- | --------------------------------------- |
+| **eeg\_types** | `Packet`, `ChannelId`, `AdcConfig`, error enums                                 | —                                 | Pure data; zero hardware.               |
+| **sensors**    | Register maps, low-level SPI/I²C for a single *chip*                            | `eeg_types`                       | Tiny, reusable; feature-gated per chip. |
+| **boards**     | Glue code that unites one or more chips into a *PCB* driver (`impl EegDriver`)  | `sensors`, `eeg_types`            | Where board-specific init lives.        |
+| **pipeline**   | DSP graph, sinks, UI API                                                        | `eeg_types`                       | Hardware-agnostic.                      |
+| **daemon**     | CLI, config parsing, picks one board driver and pumps packets into the pipeline | `boards`, `pipeline`, `eeg_types` | The only binary crate.                  |
+
+This layered architecture ensures that there are no circular dependencies, making the codebase easier to manage and scale.
 
 ---
 
@@ -165,12 +182,12 @@ EEG Electrodes
    
    # Or build individual crates
    cd crates/sensors && cargo build
-   cd crates/device && cargo build
+   cd crates/daemon && cargo build
    ```
 
 2. **Run the device daemon**
    ```bash
-   cd crates/device
+   cd crates/daemon
    cargo run
    ```
 

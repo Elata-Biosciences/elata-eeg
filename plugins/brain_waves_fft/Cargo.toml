@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { workspace = true, features = ["sync"] }
-tokio-util = "0.7"
-async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 rustfft = "6.1"
@@ -14,6 +11,8 @@ num-complex = "0.4"
 apodize = "1.0.0"
 serde_json = { workspace = true }
 bytes = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
 
 # Local dependencies
 eeg_types = { path = "../../crates/eeg_types" }
+pipeline = { path = "../../crates/pipeline" }

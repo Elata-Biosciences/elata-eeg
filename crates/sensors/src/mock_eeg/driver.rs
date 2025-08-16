@@ -1,13 +1,13 @@
-use std::sync::Arc;
-use std::collections::HashSet;
-use tokio::sync::{mpsc, Mutex};
-use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
-use async_trait::async_trait;
-use log::{info, warn, debug, trace, error};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use log::{info, debug};
 use lazy_static::lazy_static;
-use crate::types::{AdcConfig, DriverStatus, DriverError, DriverEvent, DriverType};
-use super::mock_data_generator::{gen_realistic_eeg_data, current_timestamp_micros};
+
+use crate::types::{AdcConfig, DriverStatus, DriverError};
+use super::mock_data_generator::{gen_realistic_eeg_data};
+use eeg_types::SensorError;
 
 // Static hardware lock to simulate real hardware access constraints
 lazy_static! {
@@ -17,15 +17,13 @@ lazy_static! {
 /// A stubbed-out driver that does not access any hardware.
 pub struct MockDriver {
     inner: Arc<Mutex<MockInner>>,
-    task_handle: Option<JoinHandle<()>>,
-    tx: mpsc::Sender<DriverEvent>,
-    additional_channel_buffering: usize,
 }
 
 /// Internal state for the MockDriver.
 struct MockInner {
     config: AdcConfig,
     running: bool,
+    shutting_down: bool,
     status: DriverStatus,
     // Base timestamp for calculating sample timestamps (microseconds since epoch)
     base_timestamp: Option<u64>,
@@ -34,426 +32,204 @@ struct MockInner {
 }
 
 impl MockDriver {
-    /// Create a new instance of the MockDriver.
-    ///
-    /// This constructor takes an ADC configuration and an optional additional channel buffering parameter.
-    /// The additional_channel_buffering parameter determines how many extra batches can be buffered in the channel
-    /// beyond the minimum required (which is the batch_size from the config). Setting this to 0 minimizes
-    /// latency but may cause backpressure if the consumer can't keep up.
-    ///
-    /// Returns a tuple containing the driver instance and a receiver for driver events.
-    /// Create a new instance of the MockDriver.
-    ///
-    /// This constructor takes an ADC configuration and an optional additional channel buffering parameter.
-    /// The additional_channel_buffering parameter determines how many extra batches can be buffered in the channel
-    /// beyond the minimum required (which is the batch_size from the config). Setting this to 0 minimizes
-    /// latency but may cause backpressure if the consumer can't keep up.
-    ///
-    /// # Important
-    /// Users should explicitly call `shutdown()` when done with the driver to ensure proper cleanup.
-    /// While the Drop implementation provides some basic cleanup, it cannot perform the full async shutdown sequence.
-    /// Don't start buffer data in new
-    ///
-    /// # Returns
-    /// A tuple containing the driver instance and a receiver for driver events.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - config.board_driver is not DriverType::Mock
-    /// - config.batch_size is 0 (batch size must be positive)
-    /// - config.batch_size is less than the number of channels (need at least one sample per channel)
-    pub fn new(
-        config: AdcConfig,
-        additional_channel_buffering: usize
-    ) -> Result<(Self, mpsc::Receiver<DriverEvent>), DriverError> {
+    pub fn new(config: AdcConfig) -> Result<Self, DriverError> {
         // Try to acquire the hardware lock to simulate real hardware access constraints
         let mut hardware_in_use = HARDWARE_LOCK.lock()
             .map_err(|_| DriverError::Other("Failed to acquire hardware lock".to_string()))?;
-            
+
         if *hardware_in_use {
             return Err(DriverError::HardwareNotFound(
                 "Hardware already in use by another driver instance".to_string()
             ));
         }
-        
+
         // Mark hardware as in use
         *hardware_in_use = true;
-        
+
         // Validate config
-        if config.board_driver != DriverType::MockEeg {
-            // Release the lock if we're returning an error
+        if config.chips.len() != 1 {
             *hardware_in_use = false;
             return Err(DriverError::ConfigurationError(
-                "MockDriver requires config.board_driver=DriverType::Mock".to_string()
-            ));
-        }
-        
-        // Validate channels
-        if config.channels.is_empty() {
-            // Release the lock if we're returning an error
-            *hardware_in_use = false;
-            return Err(DriverError::ConfigurationError(
-                "At least one channel must be configured".to_string()
+                "MockDriver only supports single-chip configurations".to_string(),
             ));
         }
 
-        // Check for duplicate channels
+        let chip_config = config.chips.get(0);
+        let default_channels = vec![];
+        let channels = chip_config.map(|c| &c.channels).unwrap_or(&default_channels);
+
+        if channels.is_empty() {
+            *hardware_in_use = false;
+            return Err(DriverError::ConfigurationError(
+                "At least one channel must be configured".to_string(),
+            ));
+        }
+
         let mut unique_channels = std::collections::HashSet::new();
-        for &channel in &config.channels {
+        for &channel in channels {
             if !unique_channels.insert(channel) {
-                // Release the lock if we're returning an error
                 *hardware_in_use = false;
-                return Err(DriverError::ConfigurationError(
-                    format!("Duplicate channel detected: {}", channel)
-                ));
+                return Err(DriverError::ConfigurationError(format!(
+                    "Duplicate channel detected: {}",
+                    channel
+                )));
             }
         }
 
-        // For MockDriver, we can be more flexible with channel indices
-        // but still validate they're reasonable
-        for &channel in &config.channels {
-            if channel > 31 {  // Allow more channels for mock testing
-                // Release the lock if we're returning an error
+        for &channel in channels {
+            if channel > 31 {
                 *hardware_in_use = false;
-                return Err(DriverError::ConfigurationError(
-                    format!("Invalid channel index: {}. MockDriver supports channels 0-31", channel)
-                ));
+                return Err(DriverError::ConfigurationError(format!(
+                    "Invalid channel index: {}. MockDriver supports channels 0-31",
+                    channel
+                )));
             }
         }
 
-        // Validate batch size
-        if config.batch_size == 0 {
-            // Release the lock if we're returning an error
-            *hardware_in_use = false;
-            return Err(DriverError::ConfigurationError(
-                "Batch size must be greater than 0".to_string()
-            ));
-        }
-        
-        // Validate batch size relative to channel count
-        if config.batch_size < config.channels.len() {
-            // Release the lock if we're returning an error
-            *hardware_in_use = false;
-            return Err(DriverError::ConfigurationError(
-                format!("Batch size ({}) must be at least equal to the number of channels ({})",
-                        config.batch_size, config.channels.len())
-            ));
-        }
-        
-        // Validate total buffer size (prevent excessive memory usage)
-        const MAX_BUFFER_SIZE: usize = 10000; // Arbitrary limit to prevent excessive memory usage
-        let channel_buffer_size = config.batch_size + additional_channel_buffering;
-        if channel_buffer_size > MAX_BUFFER_SIZE {
-            // Release the lock if we're returning an error
-            *hardware_in_use = false;
-            return Err(DriverError::ConfigurationError(
-                format!("Total buffer size ({}) exceeds maximum allowed ({})",
-                        channel_buffer_size, MAX_BUFFER_SIZE)
-            ));
-        }
-        
+
+        let populated_config = config.clone();
+
         let inner = MockInner {
-            config: config.clone(),
+            config: populated_config,
             running: false,
+            shutting_down: false,
             status: DriverStatus::Ok,
             base_timestamp: None,
             sample_count: 0,
         };
-        
-        // Create channel with validated buffer size
-        let (tx, rx) = mpsc::channel(channel_buffer_size);
-        
+
         let driver = MockDriver {
             inner: Arc::new(Mutex::new(inner)),
-            task_handle: None,
-            tx,
-            additional_channel_buffering,
         };
-        
+
         info!("MockDriver created with config: {:?}", config);
-        info!("Channel buffer size: {} (batch_size: {} + additional_buffering: {})",
-              channel_buffer_size, config.batch_size, additional_channel_buffering);
-        
-        Ok((driver, rx))
-    }
-    
-    /// Return the current configuration.
-    pub(crate) async fn get_config(&self) -> Result<AdcConfig, DriverError> {
-        let inner = self.inner.lock().await;
-        Ok(inner.config.clone())
-    }
 
-    /// Start a dummy acquisition task that sends fake data at regular intervals.
-    ///
-    /// This method validates the driver state and spawns a background task that
-    /// generates synthetic data according to the configured parameters.
-    pub(crate) async fn start_acquisition(&mut self) -> Result<(), DriverError> {
-        // Check preconditions without holding the lock for too long
-        {
-            let inner = self.inner.lock().await;
-                
-            if inner.running {
-                return Err(DriverError::ConfigurationError("Acquisition already running".to_string()));
-            }
-        }
-        
-        // Get the initial timestamp and update state to running
-        let start_time = match current_timestamp_micros() {
-            Ok(time) => time,
-            Err(e) => {
-                error!("Failed to get start timestamp: {:?}", e);
-                return Err(DriverError::Other(format!("Failed to get start timestamp: {}", e)));
-            }
-        };
-
-        {
-            let mut inner = self.inner.lock().await;
-            inner.running = true;
-            inner.status = DriverStatus::Running;
-            inner.base_timestamp = Some(start_time);
-            inner.sample_count = 0;
-        }
-        
-        // Notify about the status change
-        self.notify_status_change().await?;
-
-        // Prepare for background task
-        let inner_arc = self.inner.clone();
-        let tx = self.tx.clone();
-        
-        // Spawn a task that periodically sends dummy data
-        let handle = tokio::spawn(async move {
-            // Get configuration and base timestamp without holding the lock for the entire task
-            let (config, base_timestamp) = {
-                let inner = inner_arc.lock().await;
-                (inner.config.clone(), inner.base_timestamp.expect("Base timestamp should be set"))
-            };
-            
-            // Get batch size from config
-            let batch_size = config.batch_size;
-            
-            debug!("Starting acquisition with batch size: {}, sample rate: {} Hz",
-                   batch_size, config.sample_rate);
-            
-            // Main acquisition loop
-            loop {
-                // Check if we should continue running and get current sample count
-                let (should_continue, current_sample_count) = {
-                    let mut inner = inner_arc.lock().await;
-                    if !inner.running {
-                        (false, 0)
-                    } else {
-                        let count = inner.sample_count;
-                        // Update the sample count for the next batch
-                        inner.sample_count += batch_size as u64;
-                        (true, count)
-                    }
-                };
-                
-                if !should_continue {
-                    break;
-                }
-                
-                // Calculate timing parameters
-                let mut batch = Vec::with_capacity(batch_size);
-                let sample_interval = (1_000_000 / config.sample_rate) as u64; // microseconds between samples
-                debug!("Sample interval: {} microseconds", sample_interval);
-                
-                // Generate a batch of samples with incrementing timestamps based on sample count
-                for i in 0..batch_size {
-                    let sample_number = current_sample_count + i as u64;
-                    let timestamp = base_timestamp + sample_number * sample_interval;
-                    trace!("Sample {}: absolute_time={} microseconds", sample_number, timestamp);
-                    
-                    // For data generation, we still use relative timestamps (time since acquisition started)
-                    let relative_timestamp = sample_number * sample_interval;
-                    
-                    // Use gen_realistic_eeg_data for more realistic EEG data
-                    let mut samples = gen_realistic_eeg_data(&config, relative_timestamp);
-                    
-                    // Override the timestamp with our calculated one for all samples
-                    for sample in &mut samples {
-                        sample.timestamp = timestamp;
-                    }
-                    batch.extend(samples);
-                }
-                
-                // Send the batch of data
-                if let Err(e) = tx.send(DriverEvent::Data(batch)).await {
-                    warn!("MockDriver event channel closed: {}", e);
-                    break;
-                }
-                
-                // Sleep for the time it would take to collect this batch via SPI
-                let sleep_time = (1000 * batch_size as u64) / config.sample_rate as u64;
-                debug!("Sleeping for {} ms before next batch", sleep_time);
-                sleep(Duration::from_millis(sleep_time)).await;
-            }
-            
-            debug!("Acquisition task terminated");
-        });
-        
-        self.task_handle = Some(handle);
-        info!("MockDriver acquisition started");
-        Ok(())
-    }
-
-    /// Stop the dummy data acquisition.
-    ///
-    /// This method signals the acquisition task to stop, waits for it to complete,
-    /// and updates the driver status.
-    pub(crate) async fn stop_acquisition(&mut self) -> Result<(), DriverError> {
-        // Signal the acquisition task to stop
-        {
-            let mut inner = self.inner.lock().await;
-            
-            if !inner.running {
-                debug!("Stop acquisition called, but acquisition was not running");
-                return Ok(());
-            }
-            
-            inner.running = false;
-            debug!("Signaled acquisition task to stop");
-        }
-        
-        // Wait for the task to complete
-        if let Some(handle) = self.task_handle.take() {
-            match handle.await {
-                Ok(_) => debug!("Acquisition task completed successfully"),
-                Err(e) => warn!("Acquisition task terminated with error: {}", e),
-            }
-        }
-        
-        // Update driver status and reset counters
-        {
-            let mut inner = self.inner.lock().await;
-            inner.status = DriverStatus::Stopped;
-            inner.sample_count = 0;
-            // Keep the base_timestamp as it is - we'll set a new one when acquisition starts again
-        }
-        
-        // Notify about the status change
-        self.notify_status_change().await?;
-        info!("MockDriver acquisition stopped");
-        Ok(())
-    }
-
-    /// Return the current driver status.
-    ///
-    /// This method returns the current status of the driver.
-    pub(crate) async fn get_status(&self) -> DriverStatus {
-        let inner = self.inner.lock().await;
-        inner.status.clone()
-    }
-
-    /// Shut down the driver.
-    ///
-    /// This method stops any ongoing acquisition and resets the driver state.
-    ///
-    /// # Important
-    /// This method should always be called before the driver is dropped to ensure
-    /// proper cleanup of resources. The Drop implementation provides only basic cleanup
-    /// and cannot perform the full async shutdown sequence.
-    pub(crate) async fn shutdown(&mut self) -> Result<(), DriverError> {
-        debug!("Shutting down MockDriver");
-        
-        // First check if running, but don't hold the lock
-        let should_stop = {
-            let inner = self.inner.lock().await;
-            inner.running
-        };
-        
-        // Stop acquisition if needed
-        if should_stop {
-            debug!("Stopping acquisition as part of shutdown");
-            self.stop_acquisition().await?;
-        }
-
-        // Update final state
-        {
-            let mut inner = self.inner.lock().await;
-            inner.status = DriverStatus::NotInitialized;
-            inner.base_timestamp = None;
-            inner.sample_count = 0;
-            // Config is now static, so we don't need to reset it
-        }
-        
-        // Notify about the status change
-        self.notify_status_change().await?;
-        info!("MockDriver shutdown complete");
-        Ok(())
-    }
-
-    /// Internal helper to notify status changes over the event channel.
-    ///
-    /// This method sends a status change event to any listeners.
-    async fn notify_status_change(&self) -> Result<(), DriverError> {
-        // Get current status
-        let status = {
-            let inner = self.inner.lock().await;
-            inner.status.clone()
-        };
-        
-        debug!("Sending status change notification: {:?}", status);
-        
-        // Send the status change event
-        self.tx
-            .send(DriverEvent::StatusChange(status))
-            .await
-            .map_err(|e| DriverError::Other(format!("Failed to send status change: {}", e)))
+        Ok(driver)
     }
 }
 
 // Implement the AdcDriver trait
-#[async_trait]
-impl super::super::types::AdcDriver for MockDriver {
-    async fn shutdown(&mut self) -> Result<(), DriverError> {
-        self.shutdown().await
+impl crate::types::AdcDriver for MockDriver {
+    fn initialize(&mut self) -> Result<(), DriverError> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.running = true;
+        inner.status = DriverStatus::Running;
+        inner.base_timestamp =
+            Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64);
+        inner.sample_count = 0;
+        Ok(())
     }
 
-    async fn start_acquisition(&mut self) -> Result<(), DriverError> {
-        self.start_acquisition().await
+    fn acquire_batched(
+        &mut self,
+        batch_size: usize,
+        stop_flag: &AtomicBool,
+    ) -> Result<(Vec<i32>, u64, AdcConfig), SensorError> {
+        let (config, base_timestamp) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.config.clone(), inner.base_timestamp.unwrap_or(0))
+        };
+
+        let sample_interval_ns = (1_000_000_000.0 / config.sample_rate as f64) as u64;
+        let total_channels: usize = config.chips.iter().map(|chip| chip.channels.len()).sum();
+        let mut batch_buffer = Vec::with_capacity(batch_size * total_channels);
+
+        for _ in 0..batch_size {
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let sample_num = {
+                let mut inner = self.inner.lock().unwrap();
+                let count = inner.sample_count;
+                inner.sample_count += 1;
+                count
+            };
+
+            let relative_timestamp_us = (sample_num * sample_interval_ns) / 1000;
+            let sample_slice = gen_realistic_eeg_data(&config, relative_timestamp_us);
+            batch_buffer.extend_from_slice(&sample_slice);
+
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+
+        let sleep_time = Duration::from_millis((batch_size as u64 * 1000) / config.sample_rate as u64);
+        let sleep_interval = Duration::from_millis(10); // Check for stop signal every 10ms
+        let num_intervals = (sleep_time.as_millis() / sleep_interval.as_millis()) as u64;
+
+        for _ in 0..num_intervals {
+            if self.inner.lock().unwrap().shutting_down || stop_flag.load(Ordering::Relaxed) {
+                return Ok((Vec::new(), 0, config)); // Early exit if stop is signaled
+            }
+            thread::sleep(sleep_interval);
+        }
+
+
+        Ok((batch_buffer, base_timestamp, config))
     }
 
-    async fn stop_acquisition(&mut self) -> Result<(), DriverError> {
-        self.stop_acquisition().await
+    fn get_status(&self) -> DriverStatus {
+        self.inner.lock().unwrap().status.clone()
     }
 
-    async fn get_status(&self) -> DriverStatus {
-        self.get_status().await
+    fn get_config(&self) -> Result<AdcConfig, DriverError> {
+        Ok(self.inner.lock().unwrap().config.clone())
     }
 
-    async fn get_config(&self) -> Result<AdcConfig, DriverError> {
-        self.get_config().await
+    fn reconfigure(&mut self, config: &AdcConfig) -> Result<(), DriverError> {
+        // Validate configuration before applying
+        if config.chips.len() != 1 {
+            return Err(DriverError::ConfigurationError(
+                "MockDriver only supports single-chip configurations".to_string(),
+            ));
+        }
+
+        let chip_config = config.chips.get(0);
+        let default_channels = vec![];
+        let channels = chip_config.map(|c| &c.channels).unwrap_or(&default_channels);
+
+        if channels.is_empty() {
+            return Err(DriverError::ConfigurationError(
+                "At least one channel must be configured".to_string(),
+            ));
+        }
+
+        // Validate channel indices
+        for &channel in channels {
+            if channel > 31 {
+                return Err(DriverError::ConfigurationError(format!(
+                    "Invalid channel index: {}. MockDriver supports channels 0-31",
+                    channel
+                )));
+            }
+        }
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.config = config.clone();
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), DriverError> {
+        debug!("Shutting down MockDriver");
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.running = false;
+        inner.shutting_down = true;
+        inner.status = DriverStatus::NotInitialized;
+        inner.base_timestamp = None;
+        inner.sample_count = 0;
+
+        info!("MockDriver shutdown complete");
+        Ok(())
     }
 }
 
-/// Implementation of Drop for MockDriver to handle cleanup when the driver is dropped.
-///
-/// Note: This provides only basic cleanup. For proper cleanup, users should explicitly
-/// call `shutdown()` before letting the driver go out of scope. The Drop implementation
-/// cannot perform the full async shutdown sequence because Drop is not async.
 impl Drop for MockDriver {
     fn drop(&mut self) {
-        // Since we can't use .await in Drop, we'll just log a warning
-        error!("MockDriver dropped without calling shutdown() first. This may lead to resource leaks.");
-        error!("Always call driver.shutdown().await before dropping the driver.");
-        
-        // Note: We can't properly clean up in Drop because we can't use .await
-        // This is why users should call shutdown() explicitly.
-        
-        // Note: We cannot await the task_handle here because Drop is not async.
-        // This is why users should call shutdown() explicitly.
-        if self.task_handle.is_some() {
-            error!("Background task may still be running. Call shutdown() to properly terminate it.");
-        }
-        
-        // Release the hardware lock
-        if let Ok(mut lock) = HARDWARE_LOCK.lock() {
-            *lock = false;
-            debug!("Hardware lock released in Drop implementation");
-        } else {
-            error!("Failed to release hardware lock in Drop implementation");
-        }
+        // Release the hardware lock when the driver is dropped
+        let mut hardware_in_use = HARDWARE_LOCK.lock().unwrap();
+        *hardware_in_use = false;
     }
 }

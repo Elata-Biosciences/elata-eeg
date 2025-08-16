@@ -10,7 +10,7 @@ use bytes::Bytes;
 pub const PROTOCOL_VERSION: u8 = 1;
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WebSocketTopic {
     FilteredEeg = 0,
     Fft = 1,
@@ -83,6 +83,12 @@ pub struct FftConfig {
     pub window_function: String,
 }
 
+/// Commands sent from the WebSocket client to the device daemon.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "cmd")]
+pub enum WsControlCommand {
+    SetTestState { value: u32 },
+}
 
 /// System status and control events
 #[derive(Debug, Clone)]
@@ -125,6 +131,19 @@ pub enum SensorEvent {
         topic: WebSocketTopic,
         payload: Bytes,
     },
+
+    /// Recording control events
+    StartRecording,
+    StopRecording,
+    QueryRecordingStatus,
+    
+    /// Recording status feedback
+    RecordingStatus {
+        is_recording: bool,
+        file_path: Option<String>,
+        message: String,
+        timestamp: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +169,12 @@ pub enum EventFilter {
     FftOnly,
     /// Only system events
     SystemOnly,
+    /// Only recording control events (StartRecording, StopRecording)
+    RecordingControlOnly,
+    /// Only recording status events (RecordingStatus)
+    RecordingStatusOnly,
+    /// All recording-related events (control + status)
+    RecordingAll,
 }
 
 /// Helper function to check if an event matches a filter
@@ -160,6 +185,9 @@ pub fn event_matches_filter(event: &SensorEvent, filter: &EventFilter) -> bool {
         EventFilter::FilteredEegOnly => matches!(event, SensorEvent::FilteredEeg(_)),
         EventFilter::FftOnly => matches!(event, SensorEvent::Fft(_)),
         EventFilter::SystemOnly => matches!(event, SensorEvent::System(_)),
+        EventFilter::RecordingControlOnly => matches!(event, SensorEvent::StartRecording | SensorEvent::StopRecording | SensorEvent::QueryRecordingStatus),
+        EventFilter::RecordingStatusOnly => matches!(event, SensorEvent::RecordingStatus { .. }),
+        EventFilter::RecordingAll => matches!(event, SensorEvent::StartRecording | SensorEvent::StopRecording | SensorEvent::QueryRecordingStatus | SensorEvent::RecordingStatus { .. }),
     }
 }
 
@@ -181,6 +209,14 @@ impl SensorEvent {
                     .unwrap_or_default()
                     .as_micros() as u64
             }
+            SensorEvent::StartRecording | SensorEvent::StopRecording | SensorEvent::QueryRecordingStatus => {
+                // Recording control events use current time
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros() as u64
+            }
+            SensorEvent::RecordingStatus { timestamp, .. } => *timestamp,
         }
     }
 
@@ -192,6 +228,10 @@ impl SensorEvent {
             SensorEvent::Fft(_) => "Fft",
             SensorEvent::System(_) => "System",
             SensorEvent::WebSocketBroadcast { .. } => "WebSocketBroadcast",
+            SensorEvent::StartRecording => "StartRecording",
+            SensorEvent::StopRecording => "StopRecording",
+            SensorEvent::QueryRecordingStatus => "QueryRecordingStatus",
+            SensorEvent::RecordingStatus { .. } => "RecordingStatus",
         }
     }
 }
@@ -424,5 +464,64 @@ mod tests {
         
         assert_eq!(event.timestamp(), 1000); // Should return the first timestamp
         assert_eq!(event.event_type_name(), "RawEeg");
+        
+        // Test recording events
+        let start_event = SensorEvent::StartRecording;
+        assert_eq!(start_event.event_type_name(), "StartRecording");
+        
+        let stop_event = SensorEvent::StopRecording;
+        assert_eq!(stop_event.event_type_name(), "StopRecording");
+        
+        let status_event = SensorEvent::RecordingStatus {
+            is_recording: true,
+            file_path: Some("test.csv".to_string()),
+            message: "Recording started".to_string(),
+            timestamp: 12345,
+        };
+        assert_eq!(status_event.event_type_name(), "RecordingStatus");
+        assert_eq!(status_event.timestamp(), 12345);
+    }
+
+    #[test]
+    fn test_recording_event_filters() {
+        let start_event = SensorEvent::StartRecording;
+        let stop_event = SensorEvent::StopRecording;
+        let query_event = SensorEvent::QueryRecordingStatus;
+        let status_event = SensorEvent::RecordingStatus {
+            is_recording: true,
+            file_path: Some("test.csv".to_string()),
+            message: "Recording started".to_string(),
+            timestamp: 12345,
+        };
+        
+        // Test RecordingControlOnly filter
+        assert!(event_matches_filter(&start_event, &EventFilter::RecordingControlOnly));
+        assert!(event_matches_filter(&stop_event, &EventFilter::RecordingControlOnly));
+        assert!(event_matches_filter(&query_event, &EventFilter::RecordingControlOnly));
+        assert!(!event_matches_filter(&status_event, &EventFilter::RecordingControlOnly));
+        
+        // Test RecordingStatusOnly filter
+        assert!(!event_matches_filter(&start_event, &EventFilter::RecordingStatusOnly));
+        assert!(!event_matches_filter(&stop_event, &EventFilter::RecordingStatusOnly));
+        assert!(!event_matches_filter(&query_event, &EventFilter::RecordingStatusOnly));
+        assert!(event_matches_filter(&status_event, &EventFilter::RecordingStatusOnly));
+        
+        // Test RecordingAll filter
+        assert!(event_matches_filter(&start_event, &EventFilter::RecordingAll));
+        assert!(event_matches_filter(&stop_event, &EventFilter::RecordingAll));
+        assert!(event_matches_filter(&query_event, &EventFilter::RecordingAll));
+        assert!(event_matches_filter(&status_event, &EventFilter::RecordingAll));
+        
+        // Test that recording events don't match other filters
+        assert!(!event_matches_filter(&start_event, &EventFilter::RawEegOnly));
+        assert!(!event_matches_filter(&stop_event, &EventFilter::FftOnly));
+        assert!(!event_matches_filter(&query_event, &EventFilter::SystemOnly));
+        assert!(!event_matches_filter(&status_event, &EventFilter::SystemOnly));
+        
+        // Test that All filter matches recording events
+        assert!(event_matches_filter(&start_event, &EventFilter::All));
+        assert!(event_matches_filter(&stop_event, &EventFilter::All));
+        assert!(event_matches_filter(&query_event, &EventFilter::All));
+        assert!(event_matches_filter(&status_event, &EventFilter::All));
     }
 }

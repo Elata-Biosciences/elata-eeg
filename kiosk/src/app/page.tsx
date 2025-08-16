@@ -1,21 +1,23 @@
 'use client'; // Required for useState
 
 import EegMonitor from '@/components/EegMonitor';
-import { EegConfigProvider, useEegConfig } from '@/components/EegConfig';
-import { CommandWebSocketProvider } from '@/context/CommandWebSocketContext';
-import { EegDataProvider } from '@/context/EegDataContext';
-import { useContext } from 'react';
+import { PipelineProvider, usePipeline } from '@/context/PipelineContext';
+import { EventStreamProvider } from '@/context/EventStreamContext';
+import { EegDataProvider, useEegStatus } from '@/context/EegDataContext';
 
-// A new component to wrap the EegMonitor and access the context
+// This wrapper component now determines readiness based on the new isReady flag
 function EegMonitorWrapper() {
-  const { isConfigReady, status } = useEegConfig();
+  const { pipelineStatus } = usePipeline();
+  const { isReady, dataStatus } = useEegStatus();
 
-  if (!isConfigReady) {
+  if (!isReady) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex items-center justify-center h-screen">
         <div className="text-center">
-          <p className="text-2xl font-bold mb-2">Initializing EEG Monitor...</p>
-          <p className="text-lg text-gray-400">Status: {status}</p>
+          <h1 className="text-2xl font-bold mb-2">Initializing EEG Monitor...</h1>
+          <p className="text-lg text-gray-400">
+            Status: {pipelineStatus === 'starting' ? 'Starting pipeline...' : (dataStatus.wsStatus || 'Waiting for configuration...')}
+          </p>
         </div>
       </div>
     );
@@ -26,16 +28,14 @@ function EegMonitorWrapper() {
 
 export default function Home() {
   return (
-    <div className="flex flex-col min-h-screen bg-gray-900 text-white">
-      <EegConfigProvider>
-        <CommandWebSocketProvider>
+    <main className="flex flex-col h-screen bg-gray-900 text-white">
+      <EventStreamProvider>
+        <PipelineProvider>
           <EegDataProvider>
-            <div className="flex-grow">
-              <EegMonitorWrapper />
-            </div>
+            <EegMonitorWrapper />
           </EegDataProvider>
-        </CommandWebSocketProvider>
-      </EegConfigProvider>
-    </div>
+        </PipelineProvider>
+      </EventStreamProvider>
+    </main>
   );
 }

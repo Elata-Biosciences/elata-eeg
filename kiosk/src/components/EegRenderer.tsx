@@ -43,6 +43,11 @@ export const EegRenderer = React.memo(function EegRenderer({
   uiVoltageScaleFactor,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  if (!isActive || !config?.channels?.length) {
+    return <canvas ref={canvasRef} className="w-full h-full" />;
+  }
+
   const glRef     = useRef<WebGLRenderingContext | null>(null);
   const program   = useRef<WebGLProgram | null>(null);
   const location  = useRef<{
@@ -52,10 +57,11 @@ export const EegRenderer = React.memo(function EegRenderer({
   const vbos      = useRef<WebGLBuffer[]>([]);
   const cpuY      = useRef<Float32Array[]>([]);
   const rafId     = useRef<number>(0);
+  const dirtyChannels = useRef(new Set<number>());
 
   const NCH   = config.channels.length;
   const NPTS  = config.samplesPerLine ?? 1024;
-  const YSCL  = 1000000.0*(uiVoltageScaleFactor ?? 0.01);
+  const YSCL  = 100000.0*(uiVoltageScaleFactor ?? 0.01);
 
   /* ---------- init (once) ---------- */
   useEffect(() => {
@@ -64,6 +70,9 @@ export const EegRenderer = React.memo(function EegRenderer({
     const gl = canvasRef.current.getContext('webgl');
     if (!gl) return console.error('WebGL ctx failed');
     glRef.current = gl;
+    // Prime u_res with current canvas size
+    const cvs = gl.canvas as HTMLCanvasElement;
+    gl.viewport(0, 0, cvs.width, cvs.height);
 
     // build program
     const compile = (type: number, src: string) => {
@@ -85,7 +94,7 @@ export const EegRenderer = React.memo(function EegRenderer({
     location.current.res = gl.getUniformLocation(prog, 'u_res');
     location.current.sso = gl.getUniformLocation(prog, 'u_scrollScaleOffset');
     location.current.col = gl.getUniformLocation(prog, 'u_color');
-
+  
     /* VBO per channel, interleaved (x,y) */
     for (let ch = 0; ch < NCH; ch++) {
       const buf = gl.createBuffer()!;
@@ -96,19 +105,28 @@ export const EegRenderer = React.memo(function EegRenderer({
       vbos.current.push(buf);
       cpuY.current.push(arr); // keep same reference, we’ll mutate y’s
     }
-
+  
     return () => {
       cancelAnimationFrame(rafId.current);
-      vbos.current.forEach(b => gl.deleteBuffer(b));
-      gl.deleteProgram(prog);
-      vbos.current = []; cpuY.current = [];
+      const gl = glRef.current;
+      const prog = program.current;
+      if (gl && prog) {
+        vbos.current.forEach(b => gl.deleteBuffer(b));
+        gl.deleteProgram(prog);
+      }
+      vbos.current = [];
+      cpuY.current = [];
+      program.current = null;
+      glRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive]); // ← run once while active
+  }, [isActive, NCH, NPTS]);
 
   /* ---------- resize --------- */
   useEffect(() => {
     const gl = glRef.current; if (!gl) return;
+    gl.disable(gl.DEPTH_TEST);
+    gl.clearColor(0,0,0,1);
     const dpr = window.devicePixelRatio || 1;
     const w = Math.round(width  * dpr);
     const h = Math.round(height * dpr);
@@ -116,9 +134,62 @@ export const EegRenderer = React.memo(function EegRenderer({
     if (cvs.width !== w || cvs.height !== h) {
       cvs.width = w; cvs.height = h; gl.viewport(0,0,w,h);
     }
-    if (location.current.res) gl.useProgram(program.current!),
+    if (location.current.res) {
+      gl.useProgram(program.current!);
       gl.uniform2f(location.current.res, w, h);
+    }
   }, [width, height]);
+
+  const processData = React.useCallback(() => {
+    const chunks = dataBuffer.getAndClearData();
+    if (chunks.length === 0) return;
+
+    const newSamplesByChannel: number[][] = Array(NCH).fill(0).map(() => []);
+
+    for (const chunk of chunks) {
+      const { samples } = chunk;
+      const numMetaChannels = NCH; // Assume channels are interleaved in order
+
+      for (let i = 0; i < NCH; i++) {
+        const channelIndex = i;
+        for (let j = channelIndex; j < samples.length; j += numMetaChannels) {
+          const value = samples[j];
+          newSamplesByChannel[i].push(Math.abs(value) < 1e-10 ? 0 : value);
+        }
+      }
+    }
+
+    for (let i = 0; i < NCH; i++) {
+      const newSamples = newSamplesByChannel[i];
+      let numNew = newSamples.length;
+      if (numNew === 0) continue;
+
+      // Clamp to last NPTS samples to avoid negative offsets.
+      if (numNew > NPTS) {
+        newSamples.splice(0, numNew - NPTS);
+        numNew = newSamples.length; // now <= NPTS
+      }
+
+      // In-place update to avoid GC churn.
+      const ary = cpuY.current[i];
+      // Shift left by numNew samples: move old tail to front.
+      const shift = numNew * 2;
+      if (shift < NPTS * 2) {
+        ary.copyWithin(0, shift, NPTS * 2);
+      }
+      // Write new samples into the tail
+      const base = (NPTS - numNew) * 2;
+      for (let j = 0; j < numNew; j++) {
+        const dst = base + j * 2;
+        ary[dst + 1] = newSamples[j]; // y
+      }
+      // Fix x for all points (0..NPTS-1)
+      for (let j = 0; j < NPTS; j++) {
+        ary[j * 2] = j; // x
+      }
+      dirtyChannels.current.add(i);
+    }
+  }, [dataBuffer, NCH, NPTS, config.channels]);
 
   /* ---------- render loop ---------- */
   useEffect(() => {
@@ -126,66 +197,38 @@ export const EegRenderer = React.memo(function EegRenderer({
     const gl = glRef.current;
 
     const draw = () => {
-      // 1. ingest new EEG samples and shift data
-      const chunks = dataBuffer.getAndClearData();
-      if (chunks.length > 0) {
-        const batches: number[][] = Array.from({ length: NCH }, () => []);
-        chunks.forEach(chk =>
-          chk.samples.forEach(s => batches[s.channelIndex].push(s.value))
-        );
+      processData();
 
-        for (let ch = 0; ch < NCH; ch++) {
-          if (!batches[ch].length) continue;
-
-          const ary = cpuY.current[ch]; // Interleaved (x,y,x,y,...) array
-          const newVals = batches[ch];
-          const numNew = newVals.length;
-
-          if (numNew >= NPTS) {
-            // If new data is more than the buffer can hold, just take the latest
-            const latestVals = newVals.slice(-NPTS);
-            for (let i = 0; i < NPTS; i++) {
-              ary[i * 2 + 1] = latestVals[i]; // Update Y value
-            }
-          } else {
-            const numExisting = NPTS - numNew;
-            // Shift existing Y values to the left
-            for (let i = 0; i < numExisting; i++) {
-              ary[i * 2 + 1] = ary[(i + numNew) * 2 + 1];
-            }
-            // Append new Y values to the end
-            for (let i = 0; i < numNew; i++) {
-              ary[(numExisting + i) * 2 + 1] = newVals[i];
-            }
-          }
-
-          // Upload the entire modified buffer
-          gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[ch]);
-          gl.bufferSubData(gl.ARRAY_BUFFER, 0, ary);
-        }
+      for (const i of dirtyChannels.current) {
+        const ary = cpuY.current[i];
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[i]);
+        gl.bufferData(gl.ARRAY_BUFFER, ary, gl.DYNAMIC_DRAW);
       }
+      dirtyChannels.current.clear();
 
-      // 2. draw
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.useProgram(program.current!);
       gl.enableVertexAttribArray(location.current.pos);
-      gl.vertexAttribPointer(location.current.pos, 2, gl.FLOAT, false, 0, 0);
 
       const rowH = gl.canvas.height / NCH;
-      for (let ch = 0; ch < NCH; ch++) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[ch]);
-        const yOff = rowH * (ch + 0.5);
+      for (let i = 0; i < NCH; i++) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[i]);
+        // IMPORTANT: capture the currently bound buffer for the attribute
+        gl.vertexAttribPointer(location.current.pos, 2, gl.FLOAT, false, 0, 0);
+        const yOff = rowH * (i + 0.5);
         gl.uniform3f(location.current.sso!, gl.canvas.width / NPTS, YSCL, yOff);
-        const [r,g,b] = getChannelColor(ch);
+        const [r,g,b] = getChannelColor(i);
         gl.uniform4f(location.current.col!, r,g,b,1);
-        gl.drawArrays(gl.LINE_STRIP, 0, NPTS);
+        if (NPTS > 0) {
+          gl.drawArrays(gl.LINE_STRIP, 0, NPTS);
+        }
       }
 
       rafId.current = requestAnimationFrame(draw);
     };
     draw();
     return () => cancelAnimationFrame(rafId.current);
-  }, [isActive, dataBuffer, NCH, NPTS, YSCL]);
+  }, [isActive, dataBuffer, NCH, NPTS, YSCL, config.channels, processData]);
 
   return <canvas ref={canvasRef} className="w-full h-full" />;
 });

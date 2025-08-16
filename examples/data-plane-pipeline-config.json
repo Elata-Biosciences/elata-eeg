@@ -1,0 +1,140 @@
+{
+  "version": "2.0",
+  "metadata": {
+    "name": "Data Plane EEG Processing Pipeline",
+    "description": "Example pipeline using the new data plane architecture with memory pools and explicit connections",
+    "version": "2.0.0",
+    "author": "EEG System",
+    "created_at": 1704729600000000,
+    "modified_at": 1704729600000000,
+    "tags": ["eeg", "data-plane", "realtime", "filtering"]
+  },
+  "memory_pools": [
+    {
+      "name": "raw_eeg_pool",
+      "data_type": "RawEegPacket",
+      "capacity": 64,
+      "packet_size": 1024,
+      "description": "Pool for raw EEG data from acquisition"
+    },
+    {
+      "name": "voltage_eeg_pool",
+      "data_type": "VoltageEegPacket",
+      "capacity": 64,
+      "packet_size": 1024,
+      "description": "Pool for voltage-converted EEG data"
+    },
+    {
+      "name": "filtered_eeg_pool",
+      "data_type": "VoltageEegPacket",
+      "capacity": 32,
+      "packet_size": 1024,
+      "description": "Pool for filtered EEG data"
+    }
+  ],
+  "stages": [
+    {
+      "name": "acquire1",
+      "type": "acquire",
+      "params": {
+        "sps": 500,
+        "gain": 24,
+        "channels": 8,
+        "memory_pool": "raw_eeg_pool"
+      },
+      "description": "Data acquisition from ADS1299 sensor"
+    },
+    {
+      "name": "to_voltage1",
+      "type": "to_voltage",
+      "params": {
+        "vref": 4.5,
+        "adc_bits": 24,
+        "input_pool": "raw_eeg_pool",
+        "output_pool": "voltage_eeg_pool"
+      },
+      "description": "Convert raw ADC values to voltages"
+    },
+    {
+      "name": "filter1",
+      "type": "gain",
+      "params": {
+        "gain": 1.0,
+        "yield_threshold": 64
+      },
+      "description": "Apply gain to EEG signals (using canonical filter stage)"
+    },
+    {
+      "name": "display_ws",
+      "type": "websocket_sink",
+      "params": {
+        "endpoint": "ws://filtered_data",
+        "fields": ["timestamp", "filtered_channels"],
+        "format": "json"
+      },
+      "description": "Stream filtered data to WebSocket clients"
+    },
+    {
+      "name": "csv_filtered",
+      "type": "csv_sink",
+      "params": {
+        "path": "recordings/filtered.csv",
+        "fields": ["timestamp", "filtered_channels"],
+        "include_headers": true
+      },
+      "description": "Record filtered data to CSV file"
+    },
+    {
+      "name": "csv_raw",
+      "type": "csv_sink",
+      "params": {
+        "path": "recordings/raw.csv",
+        "fields": ["timestamp", "voltage_channels"],
+        "include_headers": true
+      },
+      "description": "Record raw voltage data to CSV file"
+    }
+  ],
+  "connections": [
+    {
+      "from": "acquire1",
+      "to": "to_voltage1",
+      "from_port": "out",
+      "to_port": "in",
+      "queue_capacity": 16,
+      "description": "Raw data to voltage conversion"
+    },
+    {
+      "from": "to_voltage1",
+      "to": "filter1",
+      "from_port": "out",
+      "to_port": "in",
+      "queue_capacity": 8,
+      "description": "Voltage data to filtering"
+    },
+    {
+      "from": "filter1",
+      "to": "display_ws",
+      "from_port": "out",
+      "to_port": "in",
+      "queue_capacity": 4,
+      "description": "Filtered data to WebSocket display"
+    },
+    {
+      "from": "filter1",
+      "to": "csv_filtered",
+      "from_port": "out",
+      "to_port": "in",
+      "queue_capacity": 32,
+      "description": "Filtered data to CSV recording"
+    },
+    {
+      "from": "to_voltage1",
+      "to": "csv_raw",
+      "from_port": "out",
+      "to_port": "in",
+      "queue_capacity": 32,
+      "description": "Raw voltage data to CSV recording"
+    }
+  ]
+}

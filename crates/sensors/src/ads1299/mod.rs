@@ -10,8 +10,6 @@ pub mod driver;
 pub mod test;
 
 // New modules
-pub mod acquisition;
-pub mod builder;
 pub mod error;
 pub mod helpers;
 pub mod registers;
@@ -19,4 +17,3 @@ pub mod spi;
 
 // Re-export the main driver struct and builder for convenience
 pub use driver::Ads1299Driver;
-pub use builder::Ads1299DriverBuilder;

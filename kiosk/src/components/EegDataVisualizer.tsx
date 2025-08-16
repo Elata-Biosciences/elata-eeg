@@ -2,7 +2,7 @@
 import React, { useRef, useState, useEffect, useLayoutEffect } from 'react';
 import { EegRenderer } from './EegRenderer';
 import { FftRenderer } from '../../../plugins/brain_waves_fft/ui/FftRenderer';
-import { useEegData } from '../context/EegDataContext';
+import { useEegData, useEegDynamicData } from '../context/EegDataContext';
 import { useDataBuffer } from '../hooks/useDataBuffer';
 import { SampleChunk } from '../types/eeg';
 
@@ -18,47 +18,43 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewReadyState, setViewReadyState] = useState({ signalGraph: false, appletBrainWaves: false });
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-  const [localDataVersion, setLocalDataVersion] = useState(0);
+  const signalGraphBuffer = useDataBuffer<SampleChunk>(1000);
 
-    const signalGraphBuffer = useDataBuffer<SampleChunk>();
+  const { subscribeRaw } = useEegData();
+  const { fftData, fullFftPacket } = useEegDynamicData();
 
-  const { subscribeRaw, subscribe, unsubscribe, fftData, fullFftPacket } = useEegData();
-
-  // Effect for all data subscriptions
+  // Effect for managing raw data subscription for the signal graph
   useEffect(() => {
-    // Always clean up previous subscriptions on re-run
-    let unsubRaw: (() => void) | null = null;
-    let isSubscribedToFft = false;
+    let unsubscribe: (() => void) | null = null;
 
     if (activeView === 'signalGraph') {
-      const targetBuffer = signalGraphBuffer;
-      console.log(`[Visualizer] Subscribing to raw data for ${activeView}.`);
-      targetBuffer.clear();
-      unsubRaw = subscribeRaw((newSampleChunks) => {
+      console.log('[Visualizer] Subscribing to raw data for signalGraph.');
+      // Clear previous data to ensure a fresh start
+      signalGraphBuffer.clear();
+      
+      unsubscribe = subscribeRaw((newSampleChunks) => {
         if (newSampleChunks.length > 0) {
-          targetBuffer.addData(newSampleChunks);
-          setLocalDataVersion(v => v + 1);
+          signalGraphBuffer.addData(newSampleChunks);
         }
       });
-    } else if (activeView === 'appletBrainWaves') {
-      console.log('[Visualizer] Subscribing to Fft');
-      subscribe(['Fft']);
-      isSubscribedToFft = true;
-      setViewReadyState(s => ({ ...s, appletBrainWaves: true }));
     }
 
-    // Return a cleanup function that handles all cases
+    // Cleanup function to unsubscribe when the component unmounts or dependencies change
     return () => {
-      if (unsubRaw) {
-        console.log(`[Visualizer] Unsubscribing from raw data for view: ${activeView}`);
-        unsubRaw();
-      }
-      if (isSubscribedToFft) {
-        console.log('[Visualizer] Unsubscribing from Fft');
-        unsubscribe(['Fft']);
+      if (unsubscribe) {
+        console.log('[Visualizer] Unsubscribing from raw data for signalGraph.');
+        unsubscribe();
       }
     };
-  }, [activeView, subscribeRaw, unsubscribe, subscribe, signalGraphBuffer]);
+  }, [activeView, subscribeRaw]);
+
+  // Effect for managing FFT data subscription
+  useEffect(() => {
+    if (activeView === 'appletBrainWaves') {
+      console.log('[Visualizer] View is appletBrainWaves, FFT data is handled by EegDataContext.');
+      setViewReadyState(s => ({ ...s, appletBrainWaves: true }));
+    }
+  }, [activeView]);
 
   // Effect to setup ResizeObserver
   useLayoutEffect(() => {
@@ -95,6 +91,7 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
             ) : (
               <div className="relative h-full min-h-[300px]">
                 <EegRenderer
+                  key={config.channels.join(',')}
                   isActive={activeView === 'signalGraph'}
                   config={config}
                   dataBuffer={signalGraphBuffer}
@@ -106,14 +103,16 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
             )
           )}
 
-          {activeView === 'appletBrainWaves' && (
-            <FftRenderer
-              data={fullFftPacket as any}
-              isActive={activeView === 'appletBrainWaves'}
-              containerWidth={containerSize.width}
-              containerHeight={containerSize.height}
-            />
-          )}
+          {activeView === 'appletBrainWaves' &&
+            fullFftPacket &&
+            fullFftPacket.psd_packets && (
+              <FftRenderer
+                data={fullFftPacket}
+                isActive={activeView === 'appletBrainWaves'}
+                containerWidth={containerSize.width}
+                containerHeight={containerSize.height}
+              />
+            )}
         </>
       ) : (
         <div className="absolute inset-0 flex items-center justify-center text-gray-400">

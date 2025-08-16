@@ -1,0 +1,63 @@
+[package]
+name = "adc_daemon"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["brain_waves_fft_feature"]
+brain_waves_fft_feature = ["dep:brain_waves_fft_plugin"]
+
+[dependencies]
+anyhow = "1.0"
+bincode = "1.3"
+backtrace = "0.3"
+axum = { version = "0.7.5", features = ["ws", "macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+basic_voltage_filter_plugin = { path = "../../plugins/basic_voltage_filter" }
+boards = { path = "../boards", features = ["elata_v1", "elata_v2", "mock_eeg"] }
+brain_waves_fft_plugin = { path = "../../plugins/brain_waves_fft", optional = true }
+bytes = "1.0"
+chrono = "0.4"
+clap = { version = "4.0", features = ["derive"] }
+csv = "1.2"
+csv_recorder_plugin = { path = "../../plugins/csv_recorder" }
+eeg_types = { path = "../eeg_types" }
+flume = "0.11.0"
+async-stream = "0.3"
+http = "1.1.0"
+futures = "0.3"
+futures-util = "0.3"
+log = "0.4"
+nix = { version = "0.27", features = ["signal"] }
+pipeline = { path = "../pipeline" }
+lazy_static = "1.4.0"
+rppal = { version = "0.22.1", features = ["hal"] }
+sensors = { path = "../sensors" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+toml = "0.8"
+tower = "0.4"
+tower-http = { version = "0.5.2", features = ["fs", "trace", "cors", "catch-panic"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.0", features = ["v4"] }
+dashmap = "5.5"
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"
+tokio-tungstenite = { version = "0.23.1", features = ["native-tls"] }
+async-trait = "0.1"
+
+[[bin]]
+name = "eeg_daemon"
+path = "src/main.rs"
+
+
+
+[[bin]]
+name = "ws_test"
+path = "src/ws_test.rs"

@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "name": "E2E Test Pipeline",
+    "description": "A simple pipeline to test the v1 driver by converting raw data to voltage and saving it to a CSV file.",
+    "version": "1.0.0"
+  },
+  "stages": [
+    {
+      "name": "to_voltage",
+      "type": "to_voltage",
+      "params": {
+        "vref": 4.5,
+        "adc_bits": 24
+      },
+      "inputs": [],
+      "description": "Convert raw ADC values to voltages"
+    },
+    {
+      "name": "csv_sink",
+      "type": "csv_sink",
+      "params": {
+        "path": "e2e_test_output.csv",
+        "num_channels": 8
+      },
+      "inputs": ["to_voltage"],
+      "description": "Record voltage data to a CSV file"
+    }
+  ]
+}

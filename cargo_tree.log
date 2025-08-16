@@ -1,0 +1,630 @@
+adc_daemon v0.1.0 (/home/elata/elata-eeg/crates/daemon)
+├── anyhow v1.0.98
+├── basic_voltage_filter_plugin v0.1.0 (/home/elata/elata-eeg/plugins/basic_voltage_filter)
+│   ├── anyhow v1.0.98
+│   ├── bytes v1.10.1
+│   ├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types)
+│   │   ├── anyhow v1.0.98
+│   │   ├── bytes v1.10.1
+│   │   ├── serde v1.0.219
+│   │   │   └── serde_derive v1.0.219 (proc-macro)
+│   │   │       ├── proc-macro2 v1.0.95
+│   │   │       │   └── unicode-ident v1.0.18
+│   │   │       ├── quote v1.0.40
+│   │   │       │   └── proc-macro2 v1.0.95 (*)
+│   │   │       └── syn v2.0.104
+│   │   │           ├── proc-macro2 v1.0.95 (*)
+│   │   │           ├── quote v1.0.40 (*)
+│   │   │           └── unicode-ident v1.0.18
+│   │   ├── thiserror v1.0.69
+│   │   │   └── thiserror-impl v1.0.69 (proc-macro)
+│   │   │       ├── proc-macro2 v1.0.95 (*)
+│   │   │       ├── quote v1.0.40 (*)
+│   │   │       └── syn v2.0.104 (*)
+│   │   └── tracing v0.1.41
+│   │       ├── log v0.4.27
+│   │       ├── pin-project-lite v0.2.16
+│   │       ├── tracing-attributes v0.1.30 (proc-macro)
+│   │       │   ├── proc-macro2 v1.0.95 (*)
+│   │       │   ├── quote v1.0.40 (*)
+│   │       │   └── syn v2.0.104 (*)
+│   │       └── tracing-core v0.1.34
+│   │           └── once_cell v1.21.3
+│   ├── pipeline v0.1.0 (/home/elata/elata-eeg/crates/pipeline)
+│   │   ├── anyhow v1.0.98
+│   │   ├── boards v0.1.0 (/home/elata/elata-eeg/crates/boards)
+│   │   │   ├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+│   │   │   ├── flume v0.11.1
+│   │   │   │   ├── futures-core v0.3.31
+│   │   │   │   ├── futures-sink v0.3.31
+│   │   │   │   ├── nanorand v0.7.0
+│   │   │   │   │   └── getrandom v0.2.16
+│   │   │   │   │       ├── cfg-if v1.0.1
+│   │   │   │   │       └── libc v0.2.174
+│   │   │   │   └── spin v0.9.8
+│   │   │   │       └── lock_api v0.4.13
+│   │   │   │           └── scopeguard v1.2.0
+│   │   │   │           [build-dependencies]
+│   │   │   │           └── autocfg v1.5.0
+│   │   │   ├── log v0.4.27
+│   │   │   ├── rppal v0.22.1
+│   │   │   │   ├── embedded-hal v0.2.7
+│   │   │   │   │   ├── nb v0.1.3
+│   │   │   │   │   │   └── nb v1.1.0
+│   │   │   │   │   └── void v1.0.2
+│   │   │   │   ├── embedded-hal v1.0.0
+│   │   │   │   ├── embedded-hal-nb v1.0.0
+│   │   │   │   │   ├── embedded-hal v1.0.0
+│   │   │   │   │   └── nb v1.1.0
+│   │   │   │   ├── libc v0.2.174
+│   │   │   │   ├── nb v0.1.3 (*)
+│   │   │   │   ├── spin_sleep v1.3.2
+│   │   │   │   └── void v1.0.2
+│   │   │   ├── sensors v0.1.0 (/home/elata/elata-eeg/crates/sensors)
+│   │   │   │   ├── aligned-utils v1.0.2
+│   │   │   │   ├── clap v4.5.40
+│   │   │   │   │   ├── clap_builder v4.5.40
+│   │   │   │   │   │   ├── anstream v0.6.19
+│   │   │   │   │   │   │   ├── anstyle v1.0.11
+│   │   │   │   │   │   │   ├── anstyle-parse v0.2.7
+│   │   │   │   │   │   │   │   └── utf8parse v0.2.2
+│   │   │   │   │   │   │   ├── anstyle-query v1.1.3
+│   │   │   │   │   │   │   ├── colorchoice v1.0.4
+│   │   │   │   │   │   │   ├── is_terminal_polyfill v1.70.1
+│   │   │   │   │   │   │   └── utf8parse v0.2.2
+│   │   │   │   │   │   ├── anstyle v1.0.11
+│   │   │   │   │   │   ├── clap_lex v0.7.5
+│   │   │   │   │   │   └── strsim v0.11.1
+│   │   │   │   │   └── clap_derive v4.5.40 (proc-macro)
+│   │   │   │   │       ├── heck v0.5.0
+│   │   │   │   │       ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │       ├── quote v1.0.40 (*)
+│   │   │   │   │       └── syn v2.0.104 (*)
+│   │   │   │   ├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+│   │   │   │   ├── flume v0.11.1 (*)
+│   │   │   │   ├── lazy_static v1.5.0
+│   │   │   │   ├── libc v0.2.174
+│   │   │   │   ├── log v0.4.27
+│   │   │   │   ├── nix v0.26.4
+│   │   │   │   │   ├── bitflags v1.3.2
+│   │   │   │   │   ├── cfg-if v1.0.1
+│   │   │   │   │   ├── libc v0.2.174
+│   │   │   │   │   ├── memoffset v0.7.1
+│   │   │   │   │   │   [build-dependencies]
+│   │   │   │   │   │   └── autocfg v1.5.0
+│   │   │   │   │   └── pin-utils v0.1.0
+│   │   │   │   ├── once_cell v1.21.3
+│   │   │   │   ├── rand v0.8.5
+│   │   │   │   │   ├── libc v0.2.174
+│   │   │   │   │   ├── rand_chacha v0.3.1
+│   │   │   │   │   │   ├── ppv-lite86 v0.2.21
+│   │   │   │   │   │   │   └── zerocopy v0.8.26
+│   │   │   │   │   │   └── rand_core v0.6.4
+│   │   │   │   │   │       └── getrandom v0.2.16 (*)
+│   │   │   │   │   └── rand_core v0.6.4 (*)
+│   │   │   │   ├── rand_distr v0.4.3
+│   │   │   │   │   ├── num-traits v0.2.19
+│   │   │   │   │   │   └── libm v0.2.15
+│   │   │   │   │   │   [build-dependencies]
+│   │   │   │   │   │   └── autocfg v1.5.0
+│   │   │   │   │   └── rand v0.8.5 (*)
+│   │   │   │   ├── rppal v0.22.1 (*)
+│   │   │   │   ├── serde v1.0.219 (*)
+│   │   │   │   ├── spin v0.5.2
+│   │   │   │   └── thiserror v1.0.69 (*)
+│   │   │   ├── thiserror v1.0.69 (*)
+│   │   │   └── thread-priority v0.3.0
+│   │   │       └── libc v0.2.174
+│   │   ├── core_affinity v0.8.3
+│   │   │   ├── libc v0.2.174
+│   │   │   └── num_cpus v1.17.0
+│   │   │       └── libc v0.2.174
+│   │   ├── crossbeam-queue v0.3.12
+│   │   │   └── crossbeam-utils v0.8.21
+│   │   ├── crossbeam-utils v0.8.21
+│   │   ├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+│   │   ├── flume v0.11.1 (*)
+│   │   ├── inventory v0.3.20
+│   │   ├── log v0.4.27
+│   │   ├── loom v0.7.2
+│   │   │   ├── cfg-if v1.0.1
+│   │   │   ├── generator v0.8.5
+│   │   │   │   ├── cfg-if v1.0.1
+│   │   │   │   ├── libc v0.2.174
+│   │   │   │   └── log v0.4.27
+│   │   │   │   [build-dependencies]
+│   │   │   │   ├── cc v1.2.27
+│   │   │   │   │   └── shlex v1.3.0
+│   │   │   │   └── rustversion v1.0.21 (proc-macro)
+│   │   │   ├── scoped-tls v1.0.1
+│   │   │   ├── tracing v0.1.41 (*)
+│   │   │   └── tracing-subscriber v0.3.19
+│   │   │       ├── matchers v0.1.0
+│   │   │       │   └── regex-automata v0.1.10
+│   │   │       │       └── regex-syntax v0.6.29
+│   │   │       ├── nu-ansi-term v0.46.0
+│   │   │       │   └── overload v0.1.1
+│   │   │       ├── once_cell v1.21.3
+│   │   │       ├── regex v1.11.1
+│   │   │       │   ├── aho-corasick v1.1.3
+│   │   │       │   │   └── memchr v2.7.5
+│   │   │       │   ├── memchr v2.7.5
+│   │   │       │   ├── regex-automata v0.4.9
+│   │   │       │   │   ├── aho-corasick v1.1.3 (*)
+│   │   │       │   │   ├── memchr v2.7.5
+│   │   │       │   │   └── regex-syntax v0.8.5
+│   │   │       │   └── regex-syntax v0.8.5
+│   │   │       ├── sharded-slab v0.1.7
+│   │   │       │   └── lazy_static v1.5.0
+│   │   │       ├── smallvec v1.15.1
+│   │   │       ├── thread_local v1.1.9
+│   │   │       │   └── cfg-if v1.0.1
+│   │   │       ├── tracing v0.1.41 (*)
+│   │   │       ├── tracing-core v0.1.34 (*)
+│   │   │       └── tracing-log v0.2.0
+│   │   │           ├── log v0.4.27
+│   │   │           ├── once_cell v1.21.3
+│   │   │           └── tracing-core v0.1.34 (*)
+│   │   ├── petgraph v0.6.5
+│   │   │   ├── fixedbitset v0.4.2
+│   │   │   └── indexmap v2.9.0
+│   │   │       ├── equivalent v1.0.2
+│   │   │       └── hashbrown v0.15.4
+│   │   ├── rtrb v0.2.3
+│   │   │   └── cache-padded v1.3.0
+│   │   ├── schemars v0.8.22
+│   │   │   ├── dyn-clone v1.0.19
+│   │   │   ├── schemars_derive v0.8.22 (proc-macro)
+│   │   │   │   ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   ├── quote v1.0.40 (*)
+│   │   │   │   ├── serde_derive_internals v0.29.1
+│   │   │   │   │   ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │   ├── quote v1.0.40 (*)
+│   │   │   │   │   └── syn v2.0.104 (*)
+│   │   │   │   └── syn v2.0.104 (*)
+│   │   │   ├── serde v1.0.219 (*)
+│   │   │   └── serde_json v1.0.140
+│   │   │       ├── itoa v1.0.15
+│   │   │       ├── memchr v2.7.5
+│   │   │       ├── ryu v1.0.20
+│   │   │       └── serde v1.0.219 (*)
+│   │   ├── sensors v0.1.0 (/home/elata/elata-eeg/crates/sensors) (*)
+│   │   ├── serde v1.0.219 (*)
+│   │   ├── serde_json v1.0.140 (*)
+│   │   ├── slab v0.4.10
+│   │   ├── thiserror v1.0.69 (*)
+│   │   ├── tracing v0.1.41 (*)
+│   │   ├── tungstenite v0.21.0
+│   │   │   ├── byteorder v1.5.0
+│   │   │   ├── bytes v1.10.1
+│   │   │   ├── data-encoding v2.9.0
+│   │   │   ├── http v1.3.1
+│   │   │   │   ├── bytes v1.10.1
+│   │   │   │   ├── fnv v1.0.7
+│   │   │   │   └── itoa v1.0.15
+│   │   │   ├── httparse v1.10.1
+│   │   │   ├── log v0.4.27
+│   │   │   ├── rand v0.8.5 (*)
+│   │   │   ├── sha1 v0.10.6
+│   │   │   │   ├── cfg-if v1.0.1
+│   │   │   │   ├── cpufeatures v0.2.17
+│   │   │   │   │   └── libc v0.2.174
+│   │   │   │   └── digest v0.10.7
+│   │   │   │       ├── block-buffer v0.10.4
+│   │   │   │       │   └── generic-array v0.14.7
+│   │   │   │       │       └── typenum v1.18.0
+│   │   │   │       │       [build-dependencies]
+│   │   │   │       │       └── version_check v0.9.5
+│   │   │   │       └── crypto-common v0.1.6
+│   │   │   │           ├── generic-array v0.14.7 (*)
+│   │   │   │           └── typenum v1.18.0
+│   │   │   ├── thiserror v1.0.69 (*)
+│   │   │   ├── url v2.5.4
+│   │   │   │   ├── form_urlencoded v1.2.1
+│   │   │   │   │   └── percent-encoding v2.3.1
+│   │   │   │   ├── idna v1.0.3
+│   │   │   │   │   ├── idna_adapter v1.2.1
+│   │   │   │   │   │   ├── icu_normalizer v2.0.0
+│   │   │   │   │   │   │   ├── displaydoc v0.2.5 (proc-macro)
+│   │   │   │   │   │   │   │   ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │   │   │   │   ├── quote v1.0.40 (*)
+│   │   │   │   │   │   │   │   └── syn v2.0.104 (*)
+│   │   │   │   │   │   │   ├── icu_collections v2.0.0
+│   │   │   │   │   │   │   │   ├── displaydoc v0.2.5 (proc-macro) (*)
+│   │   │   │   │   │   │   │   ├── potential_utf v0.1.2
+│   │   │   │   │   │   │   │   │   └── zerovec v0.11.2
+│   │   │   │   │   │   │   │   │       ├── yoke v0.8.0
+│   │   │   │   │   │   │   │   │       │   ├── stable_deref_trait v1.2.0
+│   │   │   │   │   │   │   │   │       │   ├── yoke-derive v0.8.0 (proc-macro)
+│   │   │   │   │   │   │   │   │       │   │   ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │   │   │   │   │       │   │   ├── quote v1.0.40 (*)
+│   │   │   │   │   │   │   │   │       │   │   ├── syn v2.0.104 (*)
+│   │   │   │   │   │   │   │   │       │   │   └── synstructure v0.13.2
+│   │   │   │   │   │   │   │   │       │   │       ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │   │   │   │   │       │   │       ├── quote v1.0.40 (*)
+│   │   │   │   │   │   │   │   │       │   │       └── syn v2.0.104 (*)
+│   │   │   │   │   │   │   │   │       │   └── zerofrom v0.1.6
+│   │   │   │   │   │   │   │   │       │       └── zerofrom-derive v0.1.6 (proc-macro)
+│   │   │   │   │   │   │   │   │       │           ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │   │   │   │   │       │           ├── quote v1.0.40 (*)
+│   │   │   │   │   │   │   │   │       │           ├── syn v2.0.104 (*)
+│   │   │   │   │   │   │   │   │       │           └── synstructure v0.13.2 (*)
+│   │   │   │   │   │   │   │   │       ├── zerofrom v0.1.6 (*)
+│   │   │   │   │   │   │   │   │       └── zerovec-derive v0.11.1 (proc-macro)
+│   │   │   │   │   │   │   │   │           ├── proc-macro2 v1.0.95 (*)
+│   │   │   │   │   │   │   │   │           ├── quote v1.0.40 (*)
+│   │   │   │   │   │   │   │   │           └── syn v2.0.104 (*)
+│   │   │   │   │   │   │   │   ├── yoke v0.8.0 (*)
+│   │   │   │   │   │   │   │   ├── zerofrom v0.1.6 (*)
+│   │   │   │   │   │   │   │   └── zerovec v0.11.2 (*)
+│   │   │   │   │   │   │   ├── icu_normalizer_data v2.0.0
+│   │   │   │   │   │   │   ├── icu_provider v2.0.0
+│   │   │   │   │   │   │   │   ├── displaydoc v0.2.5 (proc-macro) (*)
+│   │   │   │   │   │   │   │   ├── icu_locale_core v2.0.0
+│   │   │   │   │   │   │   │   │   ├── displaydoc v0.2.5 (proc-macro) (*)
+│   │   │   │   │   │   │   │   │   ├── litemap v0.8.0
+│   │   │   │   │   │   │   │   │   ├── tinystr v0.8.1
+│   │   │   │   │   │   │   │   │   │   ├── displaydoc v0.2.5 (proc-macro) (*)
+│   │   │   │   │   │   │   │   │   │   └── zerovec v0.11.2 (*)
+│   │   │   │   │   │   │   │   │   ├── writeable v0.6.1
+│   │   │   │   │   │   │   │   │   └── zerovec v0.11.2 (*)
+│   │   │   │   │   │   │   │   ├── stable_deref_trait v1.2.0
+│   │   │   │   │   │   │   │   ├── tinystr v0.8.1 (*)
+│   │   │   │   │   │   │   │   ├── writeable v0.6.1
+│   │   │   │   │   │   │   │   ├── yoke v0.8.0 (*)
+│   │   │   │   │   │   │   │   ├── zerofrom v0.1.6 (*)
+│   │   │   │   │   │   │   │   ├── zerotrie v0.2.2
+│   │   │   │   │   │   │   │   │   ├── displaydoc v0.2.5 (proc-macro) (*)
+│   │   │   │   │   │   │   │   │   ├── yoke v0.8.0 (*)
+│   │   │   │   │   │   │   │   │   └── zerofrom v0.1.6 (*)
+│   │   │   │   │   │   │   │   └── zerovec v0.11.2 (*)
+│   │   │   │   │   │   │   ├── smallvec v1.15.1
+│   │   │   │   │   │   │   └── zerovec v0.11.2 (*)
+│   │   │   │   │   │   └── icu_properties v2.0.1
+│   │   │   │   │   │       ├── displaydoc v0.2.5 (proc-macro) (*)
+│   │   │   │   │   │       ├── icu_collections v2.0.0 (*)
+│   │   │   │   │   │       ├── icu_locale_core v2.0.0 (*)
+│   │   │   │   │   │       ├── icu_properties_data v2.0.1
+│   │   │   │   │   │       ├── icu_provider v2.0.0 (*)
+│   │   │   │   │   │       ├── potential_utf v0.1.2 (*)
+│   │   │   │   │   │       ├── zerotrie v0.2.2 (*)
+│   │   │   │   │   │       └── zerovec v0.11.2 (*)
+│   │   │   │   │   ├── smallvec v1.15.1
+│   │   │   │   │   └── utf8_iter v1.0.4
+│   │   │   │   └── percent-encoding v2.3.1
+│   │   │   └── utf-8 v0.7.6
+│   │   └── uuid v1.17.0
+│   │       ├── getrandom v0.3.3
+│   │       │   ├── cfg-if v1.0.1
+│   │       │   └── libc v0.2.174
+│   │       └── serde v1.0.219 (*)
+│   │   [dev-dependencies]
+│   │   ├── async-trait v0.1.88 (proc-macro)
+│   │   │   ├── proc-macro2 v1.0.95 (*)
+│   │   │   ├── quote v1.0.40 (*)
+│   │   │   └── syn v2.0.104 (*)
+│   │   ├── proptest v1.7.0
+│   │   │   ├── bit-set v0.8.0
+│   │   │   │   └── bit-vec v0.8.0
+│   │   │   ├── bit-vec v0.8.0
+│   │   │   ├── bitflags v2.9.1
+│   │   │   ├── lazy_static v1.5.0
+│   │   │   ├── num-traits v0.2.19 (*)
+│   │   │   ├── rand v0.9.1
+│   │   │   │   └── rand_core v0.9.3
+│   │   │   │       └── getrandom v0.3.3 (*)
+│   │   │   ├── rand_chacha v0.9.0
+│   │   │   │   ├── ppv-lite86 v0.2.21 (*)
+│   │   │   │   └── rand_core v0.9.3 (*)
+│   │   │   ├── rand_xorshift v0.4.0
+│   │   │   │   └── rand_core v0.9.3 (*)
+│   │   │   ├── regex-syntax v0.8.5
+│   │   │   ├── rusty-fork v0.3.0
+│   │   │   │   ├── fnv v1.0.7
+│   │   │   │   ├── quick-error v1.2.3
+│   │   │   │   ├── tempfile v3.20.0
+│   │   │   │   │   ├── fastrand v2.3.0
+│   │   │   │   │   ├── getrandom v0.3.3 (*)
+│   │   │   │   │   ├── once_cell v1.21.3
+│   │   │   │   │   └── rustix v1.0.7
+│   │   │   │   │       ├── bitflags v2.9.1
+│   │   │   │   │       └── linux-raw-sys v0.9.4
+│   │   │   │   └── wait-timeout v0.2.1
+│   │   │   │       └── libc v0.2.174
+│   │   │   ├── tempfile v3.20.0 (*)
+│   │   │   └── unarray v0.1.4
+│   │   ├── tokio v1.45.1
+│   │   │   ├── bytes v1.10.1
+│   │   │   ├── libc v0.2.174
+│   │   │   ├── mio v1.0.4
+│   │   │   │   └── libc v0.2.174
+│   │   │   ├── parking_lot v0.12.4
+│   │   │   │   ├── lock_api v0.4.13 (*)
+│   │   │   │   └── parking_lot_core v0.9.11
+│   │   │   │       ├── cfg-if v1.0.1
+│   │   │   │       ├── libc v0.2.174
+│   │   │   │       └── smallvec v1.15.1
+│   │   │   ├── pin-project-lite v0.2.16
+│   │   │   ├── signal-hook-registry v1.4.5
+│   │   │   │   └── libc v0.2.174
+│   │   │   ├── socket2 v0.5.10
+│   │   │   │   └── libc v0.2.174
+│   │   │   └── tokio-macros v2.5.0 (proc-macro)
+│   │   │       ├── proc-macro2 v1.0.95 (*)
+│   │   │       ├── quote v1.0.40 (*)
+│   │   │       └── syn v2.0.104 (*)
+│   │   └── tracing-subscriber v0.3.19 (*)
+│   ├── sensors v0.1.0 (/home/elata/elata-eeg/crates/sensors) (*)
+│   ├── tracing v0.1.41 (*)
+│   └── uuid v1.17.0 (*)
+├── boards v0.1.0 (/home/elata/elata-eeg/crates/boards) (*)
+├── brain_waves_fft_plugin v0.1.0 (/home/elata/elata-eeg/plugins/brain_waves_fft)
+│   ├── anyhow v1.0.98
+│   ├── apodize v1.0.0
+│   ├── bytes v1.10.1
+│   ├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+│   ├── num-complex v0.4.6
+│   │   └── num-traits v0.2.19 (*)
+│   ├── pipeline v0.1.0 (/home/elata/elata-eeg/crates/pipeline) (*)
+│   ├── rustfft v6.4.0
+│   │   ├── num-complex v0.4.6 (*)
+│   │   ├── num-integer v0.1.46
+│   │   │   └── num-traits v0.2.19 (*)
+│   │   ├── num-traits v0.2.19 (*)
+│   │   ├── primal-check v0.3.4
+│   │   │   └── num-integer v0.1.46 (*)
+│   │   ├── strength_reduce v0.2.4
+│   │   └── transpose v0.2.3
+│   │       ├── num-integer v0.1.46 (*)
+│   │       └── strength_reduce v0.2.4
+│   ├── serde_json v1.0.140 (*)
+│   ├── tracing v0.1.41 (*)
+│   └── uuid v1.17.0 (*)
+├── bytes v1.10.1
+├── chrono v0.4.41
+│   ├── iana-time-zone v0.1.63
+│   ├── num-traits v0.2.19 (*)
+│   └── serde v1.0.219 (*)
+├── clap v4.5.40 (*)
+├── csv v1.3.1
+│   ├── csv-core v0.1.12
+│   │   └── memchr v2.7.5
+│   ├── itoa v1.0.15
+│   ├── ryu v1.0.20
+│   └── serde v1.0.219 (*)
+├── csv_recorder_plugin v0.1.0 (/home/elata/elata-eeg/plugins/csv_recorder)
+│   ├── anyhow v1.0.98
+│   ├── chrono v0.4.41 (*)
+│   ├── csv v1.3.1 (*)
+│   ├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+│   ├── pipeline v0.1.0 (/home/elata/elata-eeg/crates/pipeline) (*)
+│   ├── sensors v0.1.0 (/home/elata/elata-eeg/crates/sensors) (*)
+│   ├── serde v1.0.219 (*)
+│   ├── tracing v0.1.41 (*)
+│   └── uuid v1.17.0 (*)
+├── eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+├── env_logger v0.10.2
+│   ├── humantime v2.2.0
+│   ├── is-terminal v0.4.16
+│   │   └── libc v0.2.174
+│   ├── log v0.4.27
+│   ├── regex v1.11.1 (*)
+│   └── termcolor v1.4.1
+├── flume v0.11.1 (*)
+├── futures-util v0.3.31
+│   ├── futures-core v0.3.31
+│   ├── futures-macro v0.3.31 (proc-macro)
+│   │   ├── proc-macro2 v1.0.95 (*)
+│   │   ├── quote v1.0.40 (*)
+│   │   └── syn v2.0.104 (*)
+│   ├── futures-sink v0.3.31
+│   ├── futures-task v0.3.31
+│   ├── pin-project-lite v0.2.16
+│   ├── pin-utils v0.1.0
+│   └── slab v0.4.10
+├── log v0.4.27
+├── nix v0.27.1
+│   ├── bitflags v2.9.1
+│   ├── cfg-if v1.0.1
+│   └── libc v0.2.174
+├── pipeline v0.1.0 (/home/elata/elata-eeg/crates/pipeline) (*)
+├── rppal v0.22.1 (*)
+├── sensors v0.1.0 (/home/elata/elata-eeg/crates/sensors) (*)
+├── serde v1.0.219 (*)
+├── serde_json v1.0.140 (*)
+├── serde_yaml v0.9.34+deprecated
+│   ├── indexmap v2.9.0 (*)
+│   ├── itoa v1.0.15
+│   ├── ryu v1.0.20
+│   ├── serde v1.0.219 (*)
+│   └── unsafe-libyaml v0.2.11
+├── toml v0.8.23
+│   ├── serde v1.0.219 (*)
+│   ├── serde_spanned v0.6.9
+│   │   └── serde v1.0.219 (*)
+│   ├── toml_datetime v0.6.11
+│   │   └── serde v1.0.219 (*)
+│   └── toml_edit v0.22.27
+│       ├── indexmap v2.9.0 (*)
+│       ├── serde v1.0.219 (*)
+│       ├── serde_spanned v0.6.9 (*)
+│       ├── toml_datetime v0.6.11 (*)
+│       ├── toml_write v0.1.2
+│       └── winnow v0.7.11
+├── tracing v0.1.41 (*)
+├── uuid v1.17.0 (*)
+└── warp v0.3.7
+    ├── bytes v1.10.1
+    ├── futures-channel v0.3.31
+    │   ├── futures-core v0.3.31
+    │   └── futures-sink v0.3.31
+    ├── futures-util v0.3.31 (*)
+    ├── headers v0.3.9
+    │   ├── base64 v0.21.7
+    │   ├── bytes v1.10.1
+    │   ├── headers-core v0.2.0
+    │   │   └── http v0.2.12
+    │   │       ├── bytes v1.10.1
+    │   │       ├── fnv v1.0.7
+    │   │       └── itoa v1.0.15
+    │   ├── http v0.2.12 (*)
+    │   ├── httpdate v1.0.3
+    │   ├── mime v0.3.17
+    │   └── sha1 v0.10.6 (*)
+    ├── http v0.2.12 (*)
+    ├── hyper v0.14.32
+    │   ├── bytes v1.10.1
+    │   ├── futures-channel v0.3.31 (*)
+    │   ├── futures-core v0.3.31
+    │   ├── futures-util v0.3.31 (*)
+    │   ├── h2 v0.3.26
+    │   │   ├── bytes v1.10.1
+    │   │   ├── fnv v1.0.7
+    │   │   ├── futures-core v0.3.31
+    │   │   ├── futures-sink v0.3.31
+    │   │   ├── futures-util v0.3.31 (*)
+    │   │   ├── http v0.2.12 (*)
+    │   │   ├── indexmap v2.9.0 (*)
+    │   │   ├── slab v0.4.10
+    │   │   ├── tokio v1.45.1 (*)
+    │   │   ├── tokio-util v0.7.15
+    │   │   │   ├── bytes v1.10.1
+    │   │   │   ├── futures-core v0.3.31
+    │   │   │   ├── futures-sink v0.3.31
+    │   │   │   ├── pin-project-lite v0.2.16
+    │   │   │   └── tokio v1.45.1 (*)
+    │   │   └── tracing v0.1.41 (*)
+    │   ├── http v0.2.12 (*)
+    │   ├── http-body v0.4.6
+    │   │   ├── bytes v1.10.1
+    │   │   ├── http v0.2.12 (*)
+    │   │   └── pin-project-lite v0.2.16
+    │   ├── httparse v1.10.1
+    │   ├── httpdate v1.0.3
+    │   ├── itoa v1.0.15
+    │   ├── pin-project-lite v0.2.16
+    │   ├── socket2 v0.5.10 (*)
+    │   ├── tokio v1.45.1 (*)
+    │   ├── tower-service v0.3.3
+    │   ├── tracing v0.1.41 (*)
+    │   └── want v0.3.1
+    │       └── try-lock v0.2.5
+    ├── log v0.4.27
+    ├── mime v0.3.17
+    ├── mime_guess v2.0.5
+    │   ├── mime v0.3.17
+    │   └── unicase v2.8.1
+    │   [build-dependencies]
+    │   └── unicase v2.8.1
+    ├── multer v2.1.0
+    │   ├── bytes v1.10.1
+    │   ├── encoding_rs v0.8.35
+    │   │   └── cfg-if v1.0.1
+    │   ├── futures-util v0.3.31 (*)
+    │   ├── http v0.2.12 (*)
+    │   ├── httparse v1.10.1
+    │   ├── log v0.4.27
+    │   ├── memchr v2.7.5
+    │   ├── mime v0.3.17
+    │   └── spin v0.9.8 (*)
+    │   [build-dependencies]
+    │   └── version_check v0.9.5
+    ├── percent-encoding v2.3.1
+    ├── pin-project v1.1.10
+    │   └── pin-project-internal v1.1.10 (proc-macro)
+    │       ├── proc-macro2 v1.0.95 (*)
+    │       ├── quote v1.0.40 (*)
+    │       └── syn v2.0.104 (*)
+    ├── scoped-tls v1.0.1
+    ├── serde v1.0.219 (*)
+    ├── serde_json v1.0.140 (*)
+    ├── serde_urlencoded v0.7.1
+    │   ├── form_urlencoded v1.2.1 (*)
+    │   ├── itoa v1.0.15
+    │   ├── ryu v1.0.20
+    │   └── serde v1.0.219 (*)
+    ├── tokio v1.45.1 (*)
+    ├── tokio-tungstenite v0.21.0
+    │   ├── futures-util v0.3.31 (*)
+    │   ├── log v0.4.27
+    │   ├── tokio v1.45.1 (*)
+    │   └── tungstenite v0.21.0 (*)
+    ├── tokio-util v0.7.15 (*)
+    ├── tower-service v0.3.3
+    └── tracing v0.1.41 (*)
+[dev-dependencies]
+├── async-trait v0.1.88 (proc-macro) (*)
+├── bytes v1.10.1
+├── flume v0.11.1 (*)
+├── tempfile v3.20.0 (*)
+├── tokio v1.45.1 (*)
+├── tokio-stream v0.1.17
+│   ├── futures-core v0.3.31
+│   ├── pin-project-lite v0.2.16
+│   └── tokio v1.45.1 (*)
+├── tokio-test v0.4.4
+│   ├── async-stream v0.3.6
+│   │   ├── async-stream-impl v0.3.6 (proc-macro)
+│   │   │   ├── proc-macro2 v1.0.95 (*)
+│   │   │   ├── quote v1.0.40 (*)
+│   │   │   └── syn v2.0.104 (*)
+│   │   ├── futures-core v0.3.31
+│   │   └── pin-project-lite v0.2.16
+│   ├── bytes v1.10.1
+│   ├── futures-core v0.3.31
+│   ├── tokio v1.45.1 (*)
+│   └── tokio-stream v0.1.17 (*)
+└── tokio-tungstenite v0.23.1
+    ├── futures-util v0.3.31 (*)
+    ├── log v0.4.27
+    ├── native-tls v0.2.14
+    │   ├── log v0.4.27
+    │   ├── openssl v0.10.73
+    │   │   ├── bitflags v2.9.1
+    │   │   ├── cfg-if v1.0.1
+    │   │   ├── foreign-types v0.3.2
+    │   │   │   └── foreign-types-shared v0.1.1
+    │   │   ├── libc v0.2.174
+    │   │   ├── once_cell v1.21.3
+    │   │   ├── openssl-macros v0.1.1 (proc-macro)
+    │   │   │   ├── proc-macro2 v1.0.95 (*)
+    │   │   │   ├── quote v1.0.40 (*)
+    │   │   │   └── syn v2.0.104 (*)
+    │   │   └── openssl-sys v0.9.109
+    │   │       └── libc v0.2.174
+    │   │       [build-dependencies]
+    │   │       ├── cc v1.2.27 (*)
+    │   │       ├── pkg-config v0.3.32
+    │   │       └── vcpkg v0.2.15
+    │   ├── openssl-probe v0.1.6
+    │   └── openssl-sys v0.9.109 (*)
+    ├── tokio v1.45.1 (*)
+    ├── tokio-native-tls v0.3.1
+    │   ├── native-tls v0.2.14 (*)
+    │   └── tokio v1.45.1 (*)
+    └── tungstenite v0.23.0
+        ├── byteorder v1.5.0
+        ├── bytes v1.10.1
+        ├── data-encoding v2.9.0
+        ├── http v1.3.1 (*)
+        ├── httparse v1.10.1
+        ├── log v0.4.27
+        ├── native-tls v0.2.14 (*)
+        ├── rand v0.8.5 (*)
+        ├── sha1 v0.10.6 (*)
+        ├── thiserror v1.0.69 (*)
+        └── utf-8 v0.7.6
+
+basic_voltage_filter_plugin v0.1.0 (/home/elata/elata-eeg/plugins/basic_voltage_filter) (*)
+
+boards v0.1.0 (/home/elata/elata-eeg/crates/boards) (*)
+
+brain_waves_fft_plugin v0.1.0 (/home/elata/elata-eeg/plugins/brain_waves_fft) (*)
+
+csv_recorder_plugin v0.1.0 (/home/elata/elata-eeg/plugins/csv_recorder) (*)
+
+eeg_types v0.1.0 (/home/elata/elata-eeg/crates/eeg_types) (*)
+
+pipeline v0.1.0 (/home/elata/elata-eeg/crates/pipeline) (*)
+
+sensors v0.1.0 (/home/elata/elata-eeg/crates/sensors) (*)

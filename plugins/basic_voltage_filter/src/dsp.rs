@@ -161,7 +161,6 @@ impl LowpassFilter {
 /// Signal processor for applying various filters to EEG data
 #[derive(Clone)]
 pub struct SignalProcessor {
-    _sample_rate: u32,
     num_channels: usize,
     powerline_notch_filters: Option<Vec<NotchFilter>>, // Holds 50Hz OR 60Hz filters, or None
     highpass_filters: Vec<HighpassFilter>,
@@ -204,7 +203,6 @@ impl SignalProcessor {
         }
         
         Self {
-            _sample_rate: sample_rate,
             num_channels,
             powerline_notch_filters,
             highpass_filters: (0..num_channels)
@@ -214,25 +212,6 @@ impl SignalProcessor {
                 .map(|_| LowpassFilter::new(sample_rate_f32, dsp_low_pass_cutoff))
                 .collect(),
         }
-    }
-
-    /// Process a single sample for a specific channel
-    pub fn process_sample(&mut self, channel: usize, sample: f32) -> f32 {
-        // Add channel bounds check
-        assert!(channel < self.num_channels, "Channel index out of bounds");
-        
-        let mut processed = sample;
-        processed = self.highpass_filters[channel].process(processed);  // Move highpass first
-        
-        // Apply powerline notch filter if configured
-        if let Some(notch_filters) = &mut self.powerline_notch_filters {
-            if channel < notch_filters.len() {
-                processed = notch_filters[channel].process(processed);
-            }
-        }
-        
-        processed = self.lowpass_filters[channel].process(processed);
-        processed
     }
     
     /// Process a chunk of samples for a specific channel
@@ -274,41 +253,6 @@ impl SignalProcessor {
         
         Ok(())
     }
-
-    /// Reset the signal processor with new parameters
-    pub fn reset(&mut self, new_sample_rate: u32, new_num_channels: usize, dsp_high_pass_cutoff: f32, dsp_low_pass_cutoff: f32, powerline_filter_hz: Option<u32>) {
-        println!("[SignalProcessor::reset] Resetting with sample_rate: {}, num_channels: {}, HP_cutoff: {}, LP_cutoff: {}, powerline_filter_hz: {:?}",
-                 new_sample_rate, new_num_channels, dsp_high_pass_cutoff, dsp_low_pass_cutoff, powerline_filter_hz);
-        self._sample_rate = new_sample_rate;
-        self.num_channels = new_num_channels;
-        // Recreate all filters
-        let sample_rate = self._sample_rate as f32;
-        
-        // Create powerline notch filters based on the configuration
-        self.powerline_notch_filters = match powerline_filter_hz {
-            Some(freq) if freq == 50 || freq == 60 => {
-                Some((0..self.num_channels)
-                    .map(|_| NotchFilter::new(sample_rate, freq as f32))
-                    .collect())
-            },
-            _ => {
-                println!("[SignalProcessor::reset] Powerline filter is OFF or invalid value: {:?}", powerline_filter_hz);
-                None // No powerline filter
-            }
-        };
-        if self.powerline_notch_filters.is_some() {
-            println!("[SignalProcessor::reset] Powerline notch filters RE-CREATED for {:?} Hz", powerline_filter_hz.unwrap());
-        } else {
-            println!("[SignalProcessor::reset] Powerline notch filters are NOW NONE");
-        }
-        
-        self.highpass_filters = (0..self.num_channels)
-            .map(|_| HighpassFilter::new(sample_rate, dsp_high_pass_cutoff))
-            .collect();
-        self.lowpass_filters = (0..self.num_channels)
-            .map(|_| LowpassFilter::new(sample_rate, dsp_low_pass_cutoff))
-            .collect();
-    }
 }
 
 #[cfg(test)]
@@ -318,7 +262,6 @@ mod tests {
     #[test]
     fn test_signal_processor_creation() {
         let processor = SignalProcessor::new(500, 8, 1.0, 50.0, Some(60));
-        assert_eq!(processor.sample_rate, 500);
         assert_eq!(processor.num_channels, 8);
     }
 
@@ -341,14 +284,6 @@ mod tests {
 
         let result = processor.process_chunk(5, &input, &mut output);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_process_sample() {
-        let mut processor = SignalProcessor::new(500, 1, 1.0, 50.0, Some(60));
-        let result = processor.process_sample(0, 1.0);
-        // Should return a filtered value, not exactly 1.0
-        assert!(result.is_finite());
     }
 
     #[test]

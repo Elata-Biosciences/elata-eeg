@@ -1,0 +1,19 @@
+[package]
+name = "boards"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eeg_types = { path = "../eeg_types" }
+sensors = { path = "../sensors" }
+log = "0.4"
+flume = { workspace = true }
+thread-priority = "0.3"
+rppal = { version = "0.22.1", features = ["hal"] }
+thiserror = "1.0"
+
+[features]
+elata_v1 = ["sensors/ads1299"]
+elata_v2 = ["sensors/ads1299"]
+mock_eeg = ["sensors/mock_eeg"]
+default = ["elata_v2"]

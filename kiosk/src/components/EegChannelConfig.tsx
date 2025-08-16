@@ -8,7 +8,7 @@ interface ChannelConfigProps {
 }
 
 export default function EegChannelConfig({ className = '' }: ChannelConfigProps) {
-  const { config, status } = useEegConfig();
+  const { config, status, updateConfig } = useEegConfig();
   const [selectedChannels, setSelectedChannels] = useState<number[]>([]);
   const [maxChannels, setMaxChannels] = useState<number>(8);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -57,18 +57,10 @@ export default function EegChannelConfig({ className = '' }: ChannelConfigProps)
 
   // Apply channel configuration
   const applyChannelConfig = () => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setMessage({ 
-        text: 'WebSocket connection not available. Please try again later.', 
-        type: 'error' 
-      });
-      return;
-    }
-
     if (selectedChannels.length === 0) {
-      setMessage({ 
-        text: 'Please select at least one channel.', 
-        type: 'error' 
+      setMessage({
+        text: 'Please select at least one channel.',
+        type: 'error'
       });
       return;
     }
@@ -76,11 +68,23 @@ export default function EegChannelConfig({ className = '' }: ChannelConfigProps)
     setIsUpdating(true);
     setMessage({ text: 'Updating configuration...', type: 'info' });
 
-    const configMessage = {
-      channels: selectedChannels
-    };
+    // This simple panel applies a contiguous channel count matching the selection size.
+    // Detailed per-index selection is not supported in this quick panel.
+    const desiredCount = selectedChannels.length;
+    const current = config;
+    updateConfig({
+      channels: desiredCount,
+      sample_rate: current?.sample_rate ?? 250,
+      powerline_filter_hz: current?.powerline_filter_hz ?? null,
+      gain: (current as any)?.gain ?? 1,
+    });
 
-    wsRef.current.send(JSON.stringify(configMessage));
+    // Since the update is now handled via the context, we can provide
+    // optimistic feedback. The actual state will be updated via SSE.
+    setTimeout(() => {
+      setIsUpdating(false);
+      setMessage({ text: 'Configuration update sent!', type: 'success' });
+    }, 1000);
   };
 
   // Generate checkboxes for channel selection

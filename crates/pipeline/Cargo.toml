@@ -1,0 +1,51 @@
+[package]
+name = "pipeline"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+slab = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+flume = "0.11.0"
+tokio = { workspace = true, features = ["sync", "rt"] }
+core_affinity = "0.8"
+log = { workspace = true }
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+crossbeam-utils = "0.8"
+crossbeam-queue = "0.3" # Added for ArrayQueue
+schemars = "0.8"
+inventory = "0.3"
+petgraph = "0.6" # For topological sort
+rtrb = { version = "0.2", optional = true } # Real-time ring buffer
+loom = { version = "0.7", optional = true } # For concurrency testing
+eeg_types = { path = "../eeg_types" }
+sensors = { path = "../sensors", features = ["mock_eeg"] }
+boards = { path = "../boards", features = ["elata_v1", "elata_v2"] }
+byteorder = "1.4.3"
+bytemuck = { version = "1.12", features = ["derive"] }
+futures = "0.3"
+biquad = "0.4"
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
+proptest = "1.0"
+async-trait = "0.1"
+
+[features]
+default = []
+meta-tags = []
+rtrb = ["dep:rtrb"] # Enable rtrb queue backend
+loom = ["dep:loom"] # Enable loom testing
+
+[[example]]
+name = "basic_pipeline"
+path = "examples/basic_pipeline.rs"
+
+[[example]]
+name = "full_pipeline_test"
+path = "examples/full_pipeline_test.rs"

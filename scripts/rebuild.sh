@@ -15,11 +15,10 @@ fi
 # Driver is built automatically as a dependency of the daemon
 # Rebuild Rust daemon
 echo "🔧 Rebuilding Rust daemon..."
-cd daemon
+# cd daemon
 cargo clean  # Ensures a fresh build
-cargo build --release --features brain_waves_fft_feature
+cargo build --release --bin eeg_daemon
 sudo mv target/release/eeg_daemon /usr/local/bin/
-cd ..
 echo "✅ Daemon rebuild complete!"
 
 # Rebuild kiosk

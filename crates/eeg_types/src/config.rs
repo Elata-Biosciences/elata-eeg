@@ -1,6 +1,5 @@
 //! Configuration types for the EEG daemon system
 
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 /// Basic daemon configuration that plugins might need
@@ -26,7 +25,7 @@ impl Default for DaemonConfig {
             max_recording_length_minutes: 60,
             recordings_directory: "recordings".to_string(),
             batch_size: 128,
-            session: "default_session".to_string(),
+            session: "session1".to_string(),
             filter_config: FilterConfig::default(),
             driver_type: DriverType::MockEeg,
         }
@@ -58,7 +57,11 @@ impl Default for FilterConfig {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DriverType {
-    /// ADS1299 EEG chip driver
+    /// Elata V1 board (8-channel)
+    ElataV1,
+    /// Elata V2 board (32-channel)
+    ElataV2,
+    /// ADS1299 EEG chip driver (for direct use)
     Ads1299,
     /// Mock driver for testing
     MockEeg,

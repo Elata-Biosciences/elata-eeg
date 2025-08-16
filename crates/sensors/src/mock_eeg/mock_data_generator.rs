@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 use rand::Rng;
 use log::{debug, trace};
 use lazy_static::lazy_static;
-use super::super::types::{AdcConfig, AdcData, DriverError};
+use super::super::types::{AdcConfig, DriverError};
 
 /// Helper function to get current timestamp in microseconds
 ///
@@ -17,6 +17,7 @@ pub fn current_timestamp_micros() -> Result<u64, DriverError> {
 }
 
 // Same one as the ADS1299
+#[allow(dead_code)]
 fn convert_sample_to_voltage(sample_value: i32, gain: u8, use_4_5v_ref: bool) -> f32 {
     // Factor for converting to voltage: 2^23 (full scale of 24-bit ADC with sign bit)
     const FACTOR: f64 = 8_388_608.0; // 2^23
@@ -54,80 +55,63 @@ fn convert_sample_to_voltage(sample_value: i32, gain: u8, use_4_5v_ref: bool) ->
 /// Each channel's sine wave frequency is defined by:
 ///     channel 0: 2 Hz, channel 1: 6 Hz, channel 2: 10 Hz, etc.
 /// (i.e., channel i gets 2 + 4*i Hz).
-pub fn gen_eeg_sinusoid_data(config: &AdcConfig, relative_micros: u64) -> Vec<AdcData> {
+pub fn gen_eeg_sinusoid_data(config: &AdcConfig, relative_micros: u64) -> Vec<i32> {
     let t_secs = relative_micros as f32 / 1_000_000.0;
     trace!("Generating sample at t={} secs", t_secs);
 
     // Scale factor for converting sine wave (-1.0 to 1.0) to 24-bit range
     const AMPLITUDE: f32 = 2000.0 * 256.0; // Scale for 24-bit range
-    let timestamp = relative_micros;
 
-    config.channels.iter().enumerate().map(|(i, &channel)| {
+    config.chips.iter().flat_map(|chip| &chip.channels).enumerate().map(|(i, _channel)| {
         let freq = 2.0 + (i as f32) * 4.0; // 2 Hz for ch0, 6 Hz for ch1, etc.
         let angle = 2.0 * PI * freq * t_secs;
         let waveform = angle.sin();
-        let raw_value = (waveform * AMPLITUDE) as i32;
-        let voltage = convert_sample_to_voltage(raw_value, config.gain as u8, (config.vref - 4.5).abs() < f32::EPSILON);
-        
-        AdcData {
-            channel,
-            raw_value,
-            voltage,
-            timestamp,
-        }
+        (waveform * AMPLITUDE) as i32
     }).collect()
 }
 
 /// Helper function to generate more realistic EEG-like data with multiple frequency bands.
 /// This implementation creates synthetic EEG data with delta, theta, alpha, beta, and gamma
 /// components, as well as simulated line noise at 50Hz and 60Hz.
-pub fn gen_realistic_eeg_data(config: &AdcConfig, relative_micros: u64) -> Vec<AdcData> {
-    use rand::Rng;
-    use std::f32::consts::PI;
+pub fn gen_realistic_eeg_data(config: &AdcConfig, relative_micros: u64) -> Vec<i32> {
     
+    
+
     // Define constants
+    #[allow(dead_code)]
     const BYTES_PER_SAMPLE: usize = 3; // Assuming 24-bit samples (i24)
-    
+
     let t_secs = relative_micros as f32 / 1_000_000.0;
     trace!("Generating EEG sample at t={} secs", t_secs);
-    
+
     // Create or get the EEG generator
     // We use a static mutex to ensure thread safety and preserve state between calls
     lazy_static! {
-        static ref EEG_GENERATORS: std::sync::Mutex<std::collections::HashMap<u32, EegGenerator>> =
+        static ref EEG_GENERATORS: std::sync::Mutex<std::collections::HashMap<(u32, usize), EegGenerator>> =
             std::sync::Mutex::new(std::collections::HashMap::new());
     }
-    
+
     // Get or create an EEG generator for this sample rate and channel count
     let mut generators = EEG_GENERATORS.lock().unwrap();
-    let generator_key = config.sample_rate;
-    
+    let total_channels: usize = config.chips.iter().map(|chip| chip.channels.len()).sum();
+    let generator_key = (config.sample_rate, total_channels);
+
     if !generators.contains_key(&generator_key) {
-        debug!("Creating new EEG generator for sample rate {} Hz", config.sample_rate);
-        generators.insert(generator_key, EegGenerator::new(config.sample_rate, config.channels.len()));
+        debug!("Creating new EEG generator for sample rate {} Hz and {} channels", config.sample_rate, total_channels);
+        generators.insert(generator_key, EegGenerator::new(config.sample_rate, total_channels));
     }
-    
+
     // Get a mutable reference to the generator
     let gen = generators.get_mut(&generator_key).unwrap();
-    
+
     // Update the time for all channels
     for chan_idx in 0..gen.num_channels {
         gen.t[chan_idx] = t_secs;
     }
-    
+
     // Generate samples for each channel
-    let timestamp = relative_micros;
-    
-    config.channels.iter().enumerate().map(|(i, &channel)| {
-        let raw_value = gen.generate_sample(i);
-        let voltage = convert_sample_to_voltage(raw_value, config.gain as u8, (config.vref - 4.5).abs() < f32::EPSILON);
-        
-        AdcData {
-            channel,
-            raw_value,
-            voltage,
-            timestamp,
-        }
+    config.chips.iter().flat_map(|chip| &chip.channels).enumerate().map(|(i, _channel)| {
+        gen.generate_sample(i)
     }).collect()
 }
 
@@ -153,6 +137,7 @@ pub struct EegGenerator {
     // Band amplitudes vary by channel
     channel_weights: Vec<[f32; 5]>,
     // For alpha bursts
+    #[allow(dead_code)]
     alpha_burst_counter: Vec<i32>,
     // Add phase accumulators for line noise
     line_noise_50hz_phase: Vec<f32>,
@@ -222,7 +207,7 @@ impl EegGenerator {
         let mut line_noise_50hz_phase = vec![0.0; num_channels];
         let mut line_noise_60hz_phase = vec![0.0; num_channels];
         let mut line_noise_amplitude = vec![0.0; num_channels];
-        let mut alpha_burst_counter = vec![0; num_channels];
+        let alpha_burst_counter = vec![0; num_channels];
         
         for i in 0..num_channels {
             delta_phase[i] = rng.gen::<f32>() * 2.0 * PI;
@@ -309,7 +294,7 @@ impl EegGenerator {
         let signal = delta + theta + alpha + beta + gamma + line_noise_50 + line_noise_60 + noise;
         
         // Scale to 24-bit range and convert to i32
-        let amplitude = 2000.0 * 256.0; // Scale up by 2^8 for 24-bit vs 16-bit
+        let amplitude = 10.0 * 256.0; // Scale up by 2^8 for 24-bit vs 16-bit
         (signal * amplitude) as i32
     }
 }
