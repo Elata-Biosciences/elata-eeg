@@ -4,10 +4,10 @@ import React, { useEffect, useRef } from 'react';
 import { getChannelColor } from '../../../kiosk/src/utils/colorUtils';
 
 // --- Constants for Styling and Layout ---
-const GRID_COLOR = 'rgba(64, 64, 64, 1)'; // Darker gray for grid lines
-const LABEL_COLOR = '#bbbbbb'; // Light gray for labels
-const AXIS_TITLE_COLOR = '#dddddd';
-const CANVAS_BG_COLOR = 'rgba(13, 13, 13, 1)'; // Dark background
+const GRID_COLOR = 'rgba(96, 114, 116, 0.2)'; // Elata green grid for better contrast
+const LABEL_COLOR = '#2c2c2c'; // Much darker text for better readability
+const AXIS_TITLE_COLOR = '#1c1c1c'; // Very dark text for excellent contrast
+const CANVAS_BG_COLOR = 'rgba(248, 246, 238, 1)'; // Elata cream background
 
 const MARGIN_LEFT = 50;
 const MARGIN_BOTTOM = 40;

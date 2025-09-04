@@ -334,8 +334,10 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
 
   // Effect to determine when the system is truly ready
   useEffect(() => {
+    console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'sourceReadyMeta:', sourceReadyMeta);
     // Ready when pipeline is started and the final config with channel names is available
     if (pipelineStatus === 'started' && sourceReadyMeta?.channel_names) {
+      console.log('[EegDataContext] System is ready! Setting isReady to true');
       setIsReady(true);
       setShouldConnect(true); // Signal that we should connect to data WebSocket
       
@@ -435,31 +437,59 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
       console.log('[EegDataContext] WebSocket connection established');
       setWsStatus('Connected');
 
-      // Dynamically subscribe to the topic from the sourceReady event
-      if (sourceReadyMeta?.source_type && sourceReadyMeta?.meta_rev) {
-        const topic = sourceReadyMeta.source_type === 'eeg_source' ? 'eeg_voltage' : 'fft';
-        const subscriptionMessage = {
+      // Subscribe to both EEG voltage and FFT topics
+      if (sourceReadyMeta?.meta_rev) {
+        // Subscribe to EEG voltage data
+        const eegSubscription = {
           type: 'subscribe',
-          topic: topic,
+          topic: 'eeg_voltage',
           epoch: sourceReadyMeta.meta_rev,
         };
-        socket.send(JSON.stringify(subscriptionMessage));
-        console.log(`[EegDataContext] Subscribed to topic: ${subscriptionMessage.topic} with epoch ${subscriptionMessage.epoch}`);
+        socket.send(JSON.stringify(eegSubscription));
+        console.log(`[EegDataContext] Subscribed to eeg_voltage with epoch ${eegSubscription.epoch}`);
+        
+        // Subscribe to FFT data
+        const fftSubscription = {
+          type: 'subscribe',
+          topic: 'brain_waves_fft',
+          epoch: sourceReadyMeta.meta_rev,
+        };
+        socket.send(JSON.stringify(fftSubscription));
+        console.log(`[EegDataContext] Subscribed to brain_waves_fft with epoch ${fftSubscription.epoch}`);
       } else {
-        console.warn('[EegDataContext] Could not subscribe to data topic: sourceReadyMeta or meta_rev is not available.');
+        console.warn('[EegDataContext] Could not subscribe to data topics: meta_rev is not available.');
       }
     };
 
     // Define the message handler inside the effect to create a stable closure
     // over the handleSamples and handleFftData callbacks.
     socket.onmessage = (event: MessageEvent) => {
-      // Handle MetaUpdateMsg (Text)
+      // Handle JSON messages (MetaUpdateMsg and FFT data)
       if (typeof event.data === 'string') {
         const msg = JSON.parse(event.data);
+        
+        // Handle meta update messages
         if (msg.message_type === 'meta_update') {
           const metaUpdate = msg as MetaUpdateMsg;
           setMetadata(prev => ({ ...prev, [metaUpdate.topic]: metaUpdate.meta }));
+          return;
         }
+        
+        // Handle FFT data messages
+        if (msg.topic === 'brain_waves_fft' && msg.data) {
+          setFullFftPacket(msg.data);
+          
+          // Extract PSD data for individual channels
+          const newFftData: Record<number, number[]> = {};
+          if (msg.data.psd_packets) {
+            msg.data.psd_packets.forEach((packet: { channel: number; psd: number[] }) => {
+              newFftData[packet.channel] = packet.psd;
+            });
+          }
+          setFftData(newFftData);
+          return;
+        }
+        
         return;
       }
 

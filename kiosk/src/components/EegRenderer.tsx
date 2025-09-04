@@ -126,7 +126,8 @@ export const EegRenderer = React.memo(function EegRenderer({
   useEffect(() => {
     const gl = glRef.current; if (!gl) return;
     gl.disable(gl.DEPTH_TEST);
-    gl.clearColor(0,0,0,1);
+    // Set cream background color (F8F5EE in RGB)
+    gl.clearColor(0.97, 0.96, 0.93, 1); // #F8F5EE converted to 0-1 range
     const dpr = window.devicePixelRatio || 1;
     const w = Math.round(width  * dpr);
     const h = Math.round(height * dpr);

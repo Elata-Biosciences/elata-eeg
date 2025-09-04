@@ -20,7 +20,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "regl": "^2.1.1",
-    "webgl-plot": "^0.7.2"
+    "webgl-plot": "^0.7.2",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

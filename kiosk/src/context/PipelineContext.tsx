@@ -176,7 +176,9 @@ export const PipelineProvider = ({ children }: PipelineProviderProps) => {
 
   useEffect(() => {
     const handlePipelineState = async (data: any) => {
+      console.log('[PipelineContext] Received pipeline_state event:', data);
       const newStatus = data.status === 'running' ? 'started' : data.status;
+      console.log('[PipelineContext] Setting pipeline status to:', newStatus);
       setPipelineState(prevState => ({
         ...prevState,
         status: newStatus,
@@ -186,8 +188,10 @@ export const PipelineProvider = ({ children }: PipelineProviderProps) => {
       // to ensure the config is up-to-date.
       if (newStatus === 'started') {
         try {
+          console.log('[PipelineContext] Fetching full pipeline state...');
           const fullState = await getPipelineState();
           if (fullState && fullState.stages.length > 0) {
+            console.log('[PipelineContext] Got full pipeline state:', fullState);
             setPipelineState(prevState => ({
               ...prevState,
               config: fullState,

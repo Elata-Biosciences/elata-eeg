@@ -9,14 +9,14 @@
  * render flags and simplifying the overall rendering process.
  */
 
-import { useEegData } from '../context/EegDataContext';
+import { useEegStatus } from '../context/EegDataContext';
 
 /**
  * This is a placeholder component. The data handling logic has been moved to EegDataContext.
  * This component can be used for any future UI related to data handling.
  */
 export function EegDataHandler() {
-  const { dataStatus } = useEegData();
+  const { dataStatus } = useEegStatus();
 
   return (
     <div style={{ display: 'none' }}>

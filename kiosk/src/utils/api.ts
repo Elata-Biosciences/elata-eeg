@@ -88,6 +88,36 @@ export const stopPipeline = async () => {
  */
 export const sendCommand = async (pipelineId: string, command: string, params: any) => {
   try {
+    // Handle recording commands specially
+    if (command === 'StartRecording') {
+      const response = await fetch('/api/recording/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(params),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response;
+    }
+    
+    if (command === 'StopRecording') {
+      const response = await fetch('/api/recording/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(params),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response;
+    }
+    
+    // Handle other commands through the pipeline control endpoint
     const response = await fetch(`/api/pipelines/${pipelineId}/control`, {
       method: 'POST',
       headers: {

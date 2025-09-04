@@ -42,40 +42,59 @@ export default function EegRecordingControls() {
   };
 
   return (
-    <div className="flex flex-col">
+    <div className="flex items-center space-x-3">
+      {/* Recording Status Indicator */}
+      {isRecording && (
+        <div className="flex items-center px-3 py-1 rounded-full" style={{
+          backgroundColor: 'color-mix(in srgb, var(--color-accent-red) 15%, var(--color-white))',
+          border: '1px solid color-mix(in srgb, var(--color-accent-red) 30%, transparent)'
+        }}>
+          <div className="w-2 h-2 rounded-full mr-2 animate-pulse" style={{
+            backgroundColor: 'var(--color-accent-red)'
+          }}></div>
+          <span className="text-xs font-medium" style={{
+            color: 'var(--color-accent-red)',
+            fontFamily: 'var(--font-family-ui)'
+          }}>REC</span>
+        </div>
+      )}
+      
+      {/* Record/Stop Button */}
       <button
         onClick={isPending ? undefined : (isRecording ? stopRecording : startRecording)}
         disabled={isPending}
-        className={`px-4 py-1 rounded-md flex items-center ${
-          isPending
-            ? 'bg-yellow-500 text-white cursor-wait'
-            : isRecording
-              ? 'bg-red-600 hover:bg-red-700 text-white'
-              : 'bg-green-600 hover:bg-green-700 text-white'
-        }`}
+        className="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 shadow-sm hover:shadow-md transform hover:scale-105"
+        style={{
+          backgroundColor: isRecording ? 'var(--color-accent-red)' : 'var(--color-white)',
+          color: isRecording ? 'var(--color-white)' : 'var(--color-off-black)',
+          border: `1px solid ${isRecording ? 'var(--color-accent-red)' : 'var(--color-gray2)'}`,
+          cursor: isPending ? 'wait' : 'pointer',
+          minHeight: '44px'
+        }}
+        title={isPending ? 'Processing...' : isRecording ? 'Stop Recording' : 'Start Recording'}
       >
         {isPending ? (
-          <>
-            <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            Pending...
-          </>
+          <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
         ) : isRecording ? (
-          <>
-            <span className="inline-block w-2 h-2 rounded-full bg-white mr-2"></span>
-            Stop Recording
-          </>
+          // Stop icon - solid square
+          <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
+            <rect x="7" y="7" width="10" height="10" rx="1" />
+          </svg>
         ) : (
-          <>
-            <span className="inline-block w-2 h-2 rounded-full bg-white mr-2"></span>
-            Start Recording
-          </>
+          // Record icon - solid circle
+          <svg className="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="5" />
+          </svg>
         )}
       </button>
       {error && (
-        <div className="mt-1 text-red-400 text-xs">
+        <div className="mt-1 text-xs" style={{
+          color: 'var(--color-accent-red)',
+          fontSize: 'var(--font-size-xs)'
+        }}>
           {error}
         </div>
       )}
