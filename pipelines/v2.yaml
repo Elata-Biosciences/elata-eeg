@@ -1,0 +1,52 @@
+version: "1.0"
+metadata:
+  name: "E2E with the 32 channel ElataV2 driver"
+  description: "A pipeline to acquire data from an EEG board, convert it to voltage, and save it to a CSV file."
+  version: "1.1.0"
+stages:
+  - name: "eeg_source"
+    type: "eeg_source"
+    params:
+      driver:
+        type: "ElataV2" # Can be "ElataV1", "ElataV2", or "Mock"
+        sample_rate: 250
+        drdy_pin: 25
+        vref: 4.5
+        gain: 24.0
+        chips:
+          - channels: [0, 1, 2, 3]
+          - channels: [0, 1, 2, 3, 4]
+      batch_size: 32
+    outputs: ["raw_data"]
+
+  - name: "to_voltage"
+    type: "to_voltage"
+    inputs:
+      - "eeg_source.raw_data"
+    outputs: ["voltage_data"]
+
+  - name: "filter"
+    type: "gui_filter"
+    params:
+      high_pass: 16
+      low_pass: 40.0
+      notch: 60.0
+      output: "filtered_data"
+    inputs:
+      - "to_voltage.voltage_data"
+    outputs: ["filtered_data"]
+
+  - name: "csv_sink"
+    type: "csv_sink"
+    params:
+      path: "e2e_test_output.csv"
+      max_recording_length_minutes: 60
+    inputs:
+      - "to_voltage.voltage_data"
+
+  - name: "websocket_sink"
+    type: "websocket_sink"
+    params:
+      topic: "eeg_voltage"
+    inputs:
+      - "filter.filtered_data"

@@ -5,9 +5,7 @@ members = [
     "crates/sensors",
     "crates/eeg_types",
     "crates/pipeline",
-    "plugins/basic_voltage_filter",
-    "plugins/csv_recorder",
-    "plugins/brain_waves_fft",
+    "plugins/*",
     "crates/boards",
 ]
 

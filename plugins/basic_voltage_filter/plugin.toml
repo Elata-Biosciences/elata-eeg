@@ -1,0 +1,12 @@
+id = "basic_voltage_filter"
+name = "Basic Voltage Filter"
+version = "0.1.0"
+author = "Elata"
+
+[stages]
+types = ["basic_voltage_filter"]
+
+[dsp]
+high_pass_cutoff = 1.0
+low_pass_cutoff = 50.0
+powerline_filter_hz = 60
