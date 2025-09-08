@@ -116,7 +116,7 @@ export default function EegMonitorWebGL() {
     }
   }, [activeView]);
 
-  const UI_SCALE_FACTORS = [0.125, 0.25, 0.5, 1, 2, 4, 8];
+  const UI_SCALE_FACTORS = [0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128];
 
   const getViewName = (view: DataView | 'settings'): string => {
     switch (view) {

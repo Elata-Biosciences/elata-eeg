@@ -95,7 +95,7 @@ async fn main() -> Result<(), DriverError> {
         // Parse the driver configuration from the pipeline
         let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
             .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
-        let mut driver_instance = ElataV2Driver::new(adc_config)?;
+        let mut driver_instance = ElataV2Driver::with_default_board(adc_config)?;
         Some(Arc::new(std::sync::Mutex::new(Box::new(driver_instance))))
     };
 
