@@ -5,20 +5,19 @@ After the product is assembled with the touch screen, clone then start the kiosk
 ```bash
 git clone https://github.com/Elata-Biosciences/elata-eeg
 cd elata-eeg
-chmod +x install.sh
-bash install.sh
+bash scripts/install.sh
 ```
 
 ## Dev Usage
 #### Change Code
 ```bash
 # Stop kiosk mode
-bash stop.sh
+bash scripts/stop.sh
 
 # Term 1, sensors
 cd crates/sensors; cargo build
-# Term 2, device daemon
-cd crates/daemon; cargo build; cargo run
+# Term 2, device daemon (run from repo root)
+cargo run --bin eeg_daemon
 # Term 3, kiosk
 cd kiosk; npm run dev
 ```
@@ -26,12 +25,12 @@ cd kiosk; npm run dev
 #### Rebuild Production
 ```bash
 # Stop
-bash stop.sh
+bash scripts/stop.sh
 
 # ...<Change code here> ...
 
 # Rebuild code base and run kiosk mode
-bash rebuild.sh
+bash scripts/rebuild.sh
 ```
 
 
@@ -168,10 +167,19 @@ This layered architecture ensures that there are no circular dependencies, makin
    - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
    - `source $HOME/.cargo/env`
 
-4. **Clone This Repo**
+4. **Clone This Repo & Install**
    ```bash
-   git clone git@github.com:<your-username>/open_eeg.git
-   cd open_eeg
+   git clone https://github.com/Elata-Biosciences/elata-eeg
+   cd elata-eeg
+   bash scripts/install.sh
+   ```
+
+   The install script will:
+   - Install system dependencies (Rust, Node.js, Chromium, etc.)
+   - Build all Rust crates and the Next.js kiosk
+   - Set up systemd services for the daemon and kiosk
+   - Configure auto-login and kiosk mode
+   - Reboot the system when complete
 
 ## Building & Running
 
@@ -185,10 +193,13 @@ This layered architecture ensures that there are no circular dependencies, makin
    cd crates/daemon && cargo build
    ```
 
-2. **Run the device daemon**
+2. **Run the device daemon (from repo root)**
    ```bash
-   cd crates/daemon
-   cargo run
+   # Run with mock data (for testing without hardware)
+   cargo run --bin eeg_daemon -- --mock
+
+   # Or run with real hardware
+   cargo run --bin eeg_daemon
    ```
 
 3. **Run the kiosk (separate terminal)**
@@ -202,7 +213,8 @@ This layered architecture ensures that there are no circular dependencies, makin
    - Device daemon starts and initializes the sensor hardware
    - Plugin manager loads (currently basic implementation)
    - Kiosk provides web interface at http://localhost:3000
-   - WebSocket communication between daemon and kiosk
+   - WebSocket server runs on port 9000 at `/ws/data` endpoint
+   - Real-time EEG data streaming via WebSocket with topic-based subscriptions
 
 ## Usage Instructions
 
@@ -216,6 +228,13 @@ This layered architecture ensures that there are no circular dependencies, makin
 
 3. Data Logging / Output
    - By default, logs are printed. For CSV logging, we’ll add functionality soon (planned in src/logging.rs).
+
+4. **WebSocket API**
+   - Connect to `ws://localhost:9000/ws/data` for real-time data streaming
+   - Subscribe to topics by sending: `{"type": "subscribe", "topic": "eeg_voltage"}`
+   - Unsubscribe with: `{"type": "unsubscribe", "topic": "eeg_voltage"}`
+   - Supports multiple simultaneous subscriptions and clients
+   - Binary data format for high-performance streaming
 
 ## Development Notes
 
