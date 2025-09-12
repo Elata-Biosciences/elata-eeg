@@ -104,42 +104,17 @@ export const sendCommand = async (pipelineId: string, command: string, params: a
     const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
     const base = `${protocol}://${host}:9000`;
 
-    // Handle recording commands specially
-    if (command === 'StartRecording') {
-      const response = await fetch(`${base}/api/recording/start`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(params),
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      return response;
-    }
+    // Send control commands through the pipeline control endpoint
+    // For unit variants like StartRecording/StopRecording, send the JSON payload as a string (serde unit variant)
+    const isUnitVariant = command === 'StartRecording' || command === 'StopRecording' || command === 'Start' || command === 'Pause' || command === 'Resume' || command === 'Shutdown' || command === 'Drain';
+    const body = isUnitVariant ? JSON.stringify(command) : JSON.stringify({ [command]: params });
 
-    if (command === 'StopRecording') {
-      const response = await fetch(`${base}/api/recording/stop`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(params),
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      return response;
-    }
-
-    // Handle other commands through the pipeline control endpoint
     const response = await fetch(`${base}/api/pipelines/${pipelineId}/control`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ [command]: params }),
+      body,
     });
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
