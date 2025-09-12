@@ -158,7 +158,10 @@ export function EventStreamProvider({ children }: { children: React.ReactNode })
     }
 
     console.log('[EventStream] Connecting to SSE endpoint...');
-    const eventSource = new EventSource('/api/events');
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+    const base = `${protocol}://${host}:9000`;
+    const eventSource = new EventSource(`${base}/api/events`);
     eventSourceRef.current = eventSource;
     setFatalError(null);
 

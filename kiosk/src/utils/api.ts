@@ -6,7 +6,10 @@
  */
 export const getPipelines = async () => {
   try {
-    const response = await fetch('/api/pipelines');
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+    const base = `${protocol}://${host}:9000`;
+    const response = await fetch(`${base}/api/pipelines`);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -24,7 +27,10 @@ export const getPipelines = async () => {
  */
 export const startPipeline = async (id: string) => {
   try {
-    const response = await fetch(`/api/pipelines/${id}/start`, {
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+    const base = `${protocol}://${host}:9000`;
+    const response = await fetch(`${base}/api/pipelines/${id}/start`, {
       method: 'POST',
     });
     if (!response.ok) {
@@ -43,7 +49,10 @@ export const startPipeline = async (id: string) => {
  */
 export const getPipelineState = async () => {
   try {
-    const response = await fetch('/api/state');
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+    const base = `${protocol}://${host}:9000`;
+    const response = await fetch(`${base}/api/state`);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -60,7 +69,10 @@ export const getPipelineState = async () => {
  */
 export const stopPipeline = async () => {
   try {
-    const response = await fetch(`/api/pipelines/stop`, {
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+    const base = `${protocol}://${host}:9000`;
+    const response = await fetch(`${base}/api/pipelines/stop`, {
       method: 'POST',
     });
     if (!response.ok) {
@@ -88,9 +100,13 @@ export const stopPipeline = async () => {
  */
 export const sendCommand = async (pipelineId: string, command: string, params: any) => {
   try {
+    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+    const base = `${protocol}://${host}:9000`;
+
     // Handle recording commands specially
     if (command === 'StartRecording') {
-      const response = await fetch('/api/recording/start', {
+      const response = await fetch(`${base}/api/recording/start`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -102,9 +118,9 @@ export const sendCommand = async (pipelineId: string, command: string, params: a
       }
       return response;
     }
-    
+
     if (command === 'StopRecording') {
-      const response = await fetch('/api/recording/stop', {
+      const response = await fetch(`${base}/api/recording/stop`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -116,9 +132,9 @@ export const sendCommand = async (pipelineId: string, command: string, params: a
       }
       return response;
     }
-    
+
     // Handle other commands through the pipeline control endpoint
-    const response = await fetch(`/api/pipelines/${pipelineId}/control`, {
+    const response = await fetch(`${base}/api/pipelines/${pipelineId}/control`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
