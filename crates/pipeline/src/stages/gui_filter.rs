@@ -22,7 +22,8 @@ pub struct TripleIirConfig {
     /// Low-pass cutoff (Hz)
     pub low_pass: f32,
     /// Optional powerline notch (50 or 60)
-    pub notch: Option<f32>,
+    #[serde(rename = "notch")]
+    pub powerline_filter_hz: Option<f32>,
     /// Output name (default: "out")
     #[serde(default = "default_out")]
     pub output: String,
@@ -43,7 +44,7 @@ impl StageFactory for TripleIirFactory {
         if !(cfg.high_pass > 0.0 && cfg.low_pass > cfg.high_pass) {
             return Err(StageError::BadConfig("0 < high_pass < low_pass required".into()));
         }
-        if let Some(n) = cfg.notch { if n != 50.0 && n != 60.0 { return Err(StageError::BadConfig("notch must be 50.0 or 60.0".into())); } }
+        if let Some(n) = cfg.powerline_filter_hz { if n != 50.0 && n != 60.0 { return Err(StageError::BadConfig("notch must be 50.0 or 60.0".into())); } }
 
         Ok((Box::new(TripleIirStage::new(config.name.clone(), cfg, config.outputs.clone())), None))
     }
@@ -83,14 +84,14 @@ impl TripleIirStage {
         let nyq = fs_hz * 0.5;
         if !(self.cfg.high_pass > 0.0 && self.cfg.high_pass < nyq) { return Err(StageError::BadConfig("bad high_pass vs Nyquist".into())); }
         if !(self.cfg.low_pass > 0.0 && self.cfg.low_pass < nyq) { return Err(StageError::BadConfig("bad low_pass vs Nyquist".into())); }
-        if let Some(n) = self.cfg.notch { if n >= nyq { return Err(StageError::BadConfig("notch must be < Nyquist".into())); } }
+        if let Some(n) = self.cfg.powerline_filter_hz { if n >= nyq { return Err(StageError::BadConfig("notch must be < Nyquist".into())); } }
 
         // Build coefficients (Butterworth Q is fine for HP/LP)
         let hp = Coefficients::<f32>::from_params(Type::HighPass, fs_hz.hz(), self.cfg.high_pass.hz(), Q_BUTTERWORTH_F32)
             .map_err(|e| StageError::BadConfig(format!("HP coeffs: {:?}", e)))?;
         let lp = Coefficients::<f32>::from_params(Type::LowPass,  fs_hz.hz(), self.cfg.low_pass.hz(),  Q_BUTTERWORTH_F32)
             .map_err(|e| StageError::BadConfig(format!("LP coeffs: {:?}", e)))?;
-        let notch = if let Some(n) = self.cfg.notch {
+        let notch = if let Some(n) = self.cfg.powerline_filter_hz {
             // Narrow notch
             let q = 30.0;
             Some(Coefficients::<f32>::from_params(Type::Notch, fs_hz.hz(), n.hz(), q)
@@ -106,6 +107,7 @@ impl TripleIirStage {
         self.fs_last = Some(fs_hz);
         Ok(())
     }
+
 }
 
 impl Stage for TripleIirStage {
@@ -166,7 +168,7 @@ impl Stage for TripleIirStage {
         if !(new_cfg.high_pass > 0.0 && new_cfg.low_pass > new_cfg.high_pass) {
             return Err(StageError::BadConfig("0 < high_pass < low_pass required".into()));
         }
-        if let Some(n) = new_cfg.notch { if n != 50.0 && n != 60.0 { return Err(StageError::BadConfig("notch must be 50.0 or 60.0".into())); } }
+        if let Some(n) = new_cfg.powerline_filter_hz { if n != 50.0 && n != 60.0 { return Err(StageError::BadConfig("notch must be 50.0 or 60.0".into())); } }
         self.cfg = new_cfg;
         self.chains.clear();   // force rebuild on next packet
         Ok(())

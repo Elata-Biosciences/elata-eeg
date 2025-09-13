@@ -11,7 +11,7 @@ use eeg_types::comms::BrokerMessage;
 use flume::Receiver;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 use sensors::types::AdcDriver;
@@ -69,7 +69,7 @@ impl PipelineGraph {
         registry: &StageRegistry,
         event_tx: flume::Sender<crate::control::PipelineEvent>,
         allocator: Option<SharedPacketAllocator>,
-        driver: &Option<Arc<Mutex<Box<dyn AdcDriver + Send>>>>,
+        driver: &Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>>,
         websocket_sender: Option<broadcast::Sender<Arc<BrokerMessage>>>,
     ) -> Result<Self, StageError> {
         let mut nodes = HashMap::new();
@@ -100,6 +100,7 @@ impl PipelineGraph {
                 driver,
                 sample_rate,
                 websocket_sender: websocket_sender.clone(),
+                system_config: config,
             };
 
             let (stage, producer_rx) = registry.create_stage(stage_config, &init_ctx)?;
@@ -171,7 +172,7 @@ impl PipelineGraph {
 
 
     /// Forwards a control command to all stages in the graph.
-    pub fn handle_control_command(&mut self, cmd: &ControlCommand) -> Result<(), PipelineError> {
+    pub async fn handle_control_command(&mut self, cmd: &ControlCommand) -> Result<(), PipelineError> {
         match cmd {
             ControlCommand::Reconfigure(new_config) => {
                 self.topo_dirty = true;
@@ -183,7 +184,7 @@ impl PipelineGraph {
                         let params_value = serde_json::to_value(&stage_config.params)?;
                         node.stage
                             .lock()
-                            .unwrap()
+                            .await
                             .reconfigure(&params_value, &mut self.context)?;
                     }
                 }
@@ -198,7 +199,7 @@ impl PipelineGraph {
             ControlCommand::SetParameter { target_stage, parameters } => {
                 // Forward the command to the target stage
                 if let Some(node) = self.nodes.get_mut(target_stage) {
-                    node.stage.lock().unwrap().control(cmd, &mut self.context)?;
+                    node.stage.lock().await.control(cmd, &mut self.context)?;
                     
                     // Emit a ParameterChanged event
                     for (param_id, value) in parameters.as_object().unwrap_or(&serde_json::Map::new()) {
@@ -214,7 +215,7 @@ impl PipelineGraph {
             }
             ControlCommand::Start => {
                 for node in self.nodes.values_mut() {
-                    node.stage.lock().unwrap().control(cmd, &mut self.context)?;
+                    node.stage.lock().await.control(cmd, &mut self.context)?;
                     
                     // Emit a StageStarted event
                     if let Err(e) = self.context.event_tx.send(crate::control::PipelineEvent::StageStarted {
@@ -226,7 +227,7 @@ impl PipelineGraph {
             }
             ControlCommand::Shutdown => {
                 for node in self.nodes.values_mut() {
-                    node.stage.lock().unwrap().control(cmd, &mut self.context)?;
+                    node.stage.lock().await.control(cmd, &mut self.context)?;
                     
                     // Emit a StageStopped event
                     if let Err(e) = self.context.event_tx.send(crate::control::PipelineEvent::StageStopped {
@@ -238,7 +239,7 @@ impl PipelineGraph {
             }
             _ => {
                 for node in self.nodes.values_mut() {
-                    node.stage.lock().unwrap().control(cmd, &mut self.context)?;
+                    node.stage.lock().await.control(cmd, &mut self.context)?;
                 }
             }
         }
@@ -253,9 +254,9 @@ impl PipelineGraph {
 
     /// Flushes all sink stages that implement the `Drains` trait.
     /// TODO: This requires a mechanism to downcast `Stage` to `Drains`.
-    pub fn flush(&mut self) -> Result<(), PipelineError> {
+    pub async fn flush(&mut self) -> Result<(), PipelineError> {
         for node in self.nodes.values_mut() {
-            if let Some(drains) = node.stage.lock().unwrap().as_drains() {
+            if let Some(drains) = node.stage.lock().await.as_drains() {
                 drains.flush().map_err(|e| PipelineError::RuntimeError {
                     stage_name: node.name.clone(),
                     message: format!("IO error during flush: {}", e),

@@ -22,22 +22,23 @@ use pipeline::{
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 // Shared application state
-use crate::websocket_broker::WebSocketBroker;
-
-use sensors::types::AdcDriver;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub pipelines: Arc<Mutex<HashMap<String, PathBuf>>>,
-    pub sse_tx: broadcast::Sender<String>,
-    pub event_tx: Sender<PipelineEvent>,
-    pub pipeline_handle: Arc<Mutex<Option<PipelineHandle>>>,
-    pub source_meta_cache: Arc<Mutex<Option<SensorMeta>>>,
-    pub broker: Arc<WebSocketBroker>,
-    pub broker_shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-    pub websocket_sender: broadcast::Sender<Arc<BrokerMessage>>,
-    pub driver: Option<Arc<std::sync::Mutex<Box<dyn AdcDriver + Send>>>>,
-}
+use crate::{config::ConfigBroker, websocket_broker::WebSocketBroker};
+ 
+ use sensors::types::AdcDriver;
+ 
+ #[derive(Clone)]
+ pub struct AppState {
+     pub pipelines: Arc<Mutex<HashMap<String, PathBuf>>>,
+     pub sse_tx: broadcast::Sender<String>,
+     pub event_tx: Sender<PipelineEvent>,
+     pub pipeline_handle: Arc<Mutex<Option<PipelineHandle>>>,
+     pub source_meta_cache: Arc<Mutex<Option<SensorMeta>>>,
+     pub broker: Arc<WebSocketBroker>,
+     pub config_broker: Arc<ConfigBroker>,
+     pub broker_shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+     pub websocket_sender: broadcast::Sender<Arc<BrokerMessage>>,
+     pub driver: Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>>,
+ }
 
 impl FromRef<AppState> for Arc<WebSocketBroker> {
     fn from_ref(state: &AppState) -> Self {
@@ -414,4 +415,8 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/set-config", post(set_config_handler))
         .route("/api/save-config", post(save_config_handler))
         .route("/api/events", get(sse_handler))
+        .route(
+            "/ws/config",
+            get(crate::config::config_websocket_handler),
+        )
 }

@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useEffect, ReactNode } from 'react';
-import { EventStreamProvider } from "@/context/EventStreamContext";
-import { PipelineProvider, usePipeline } from "@/context/PipelineContext";
-import { EegDataProvider } from "@/context/EegDataContext";
-import { EegConfigProvider } from "@/components/EegConfig";
+import { EventStreamProvider } from "../context/EventStreamContext";
+import { PipelineProvider, usePipeline } from "../context/PipelineContext";
+import { EegDataProvider } from "../context/EegDataContext";
+import { EegConfigProvider } from "../hooks/useEegConfig";
 
 // A component to handle the pipeline initialization logic.
 const PipelineInitializer = ({ children }: { children: ReactNode }) => {
@@ -26,13 +26,13 @@ const ComposedProviders = ({ children }: { children: ReactNode }) => {
   return (
     <EventStreamProvider>
       <PipelineProvider>
-        <EegDataProvider>
-          <EegConfigProvider>
+        <EegConfigProvider>
+          <EegDataProvider>
             <PipelineInitializer>
               {children}
             </PipelineInitializer>
-          </EegConfigProvider>
-        </EegDataProvider>
+          </EegDataProvider>
+        </EegConfigProvider>
       </PipelineProvider>
     </EventStreamProvider>
   );

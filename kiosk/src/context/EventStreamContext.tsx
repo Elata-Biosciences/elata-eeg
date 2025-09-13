@@ -111,128 +111,129 @@ export const useEventStreamData = () => {
   return context;
 };
 
-export function EventStreamProvider({ children }: { children: React.ReactNode }) {
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [fatalError, setFatalError] = useState<string | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const listeners = useRef<Record<string, Record<string, (data: any) => void>>>({});
-  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectAttemptsRef = useRef(0);
+// Create a singleton instance of the event stream manager
+class EventStreamManager {
+  private eventSource: EventSource | null = null;
+  private listeners: Record<string, Record<string, (data: any) => void>> = {};
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempts = 0;
+  public isConnected = false;
+  public error: string | null = null;
+  public fatalError: string | null = null;
+  private stateChangeCallback: (() => void) | null = null;
 
-  const subscribe = useCallback((eventType: string, callback: (data: any) => void) => {
-    const id = Math.random().toString(36).substring(2, 9);
-    if (!listeners.current[eventType]) {
-      listeners.current[eventType] = {};
+  constructor() {
+    if (typeof window !== 'undefined') {
+      this.connect();
     }
-    listeners.current[eventType][id] = callback;
+  }
 
-    // Return an unsubscribe function
-    return () => {
-      delete listeners.current[eventType][id];
-      if (Object.keys(listeners.current[eventType]).length === 0) {
-        delete listeners.current[eventType];
-      }
-    };
-  }, []);
+  private setState(updater: Partial<EventStreamManager>) {
+    Object.assign(this, updater);
+    this.stateChangeCallback?.();
+  }
 
-  const disconnect = useCallback(() => {
-    if (eventSourceRef.current) {
-      console.log('[EventStream] Disconnecting from SSE endpoint');
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-      setIsConnected(false);
-    }
-  }, []);
+  public registerStateChangeCallback(callback: () => void) {
+    this.stateChangeCallback = callback;
+  }
 
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      console.log('[EventStream] Already connected or connecting.');
-      return;
-    }
+  public connect() {
+    if (this.eventSource) return;
 
-    // Clear any existing reconnect timer
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
 
     console.log('[EventStream] Connecting to SSE endpoint...');
-    const eventSource = new EventSource('/api/events');
-    eventSourceRef.current = eventSource;
-    setFatalError(null);
+    const daemonUrl = process.env.NEXT_PUBLIC_DAEMON_URL || 'http://localhost:9000';
+    this.eventSource = new EventSource(`${daemonUrl}/api/events`);
 
-    eventSource.onopen = () => {
+    this.eventSource.onopen = () => {
       console.log('[EventStream] SSE connection established.');
-      setIsConnected(true);
-      setError(null);
-      reconnectAttemptsRef.current = 0; // Reset reconnect attempts on successful connection
+      this.setState({ isConnected: true, error: null });
+      this.reconnectAttempts = 0;
     };
 
-    eventSource.onmessage = (event) => {
+    this.eventSource.onmessage = (event) => {
       try {
         const parsedData = JSON.parse(event.data);
         const eventType = Object.keys(parsedData)[0] as EventType;
         const eventPayload = parsedData[eventType];
-        const eventData = { type: eventType, data: eventPayload } as EventData;
-
-        if (eventData.type === 'PipelineFailed') {
-          console.error(`[EventStream] Fatal pipeline error: ${eventData.data.error}`);
-          setFatalError(eventData.data.error);
-          eventSource.close();
-          setIsConnected(false);
+        
+        if (eventType === 'PipelineFailed') {
+          console.error(`[EventStream] Fatal pipeline error: ${(eventPayload as any).error}`);
+          this.setState({ fatalError: (eventPayload as any).error, isConnected: false });
+          this.eventSource?.close();
         }
 
-        if (listeners.current[eventType]) {
-          Object.values(listeners.current[eventType]).forEach(callback => {
-            try {
-              callback(eventPayload);
-            } catch (e) {
-              console.error(`[EventStream] Error in event listener for ${eventType}:`, e);
-            }
-          });
+        if (this.listeners[eventType]) {
+          Object.values(this.listeners[eventType]).forEach(callback => callback(eventPayload));
         }
       } catch (err) {
         console.error('[EventStream] Error parsing event data:', err);
       }
     };
 
-    eventSource.onerror = (err) => {
+    this.eventSource.onerror = (err) => {
       console.error('[EventStream] SSE connection error:', err);
-      setIsConnected(false);
-      eventSource.close();
-      eventSourceRef.current = null;
+      this.eventSource?.close();
+      this.eventSource = null;
+      this.setState({ isConnected: false });
 
-      // Implement exponential backoff for reconnection
-      const attempt = reconnectAttemptsRef.current;
-      const delay = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30s delay
-      reconnectAttemptsRef.current++;
-
-      setError(`Connection lost. Retrying in ${delay / 1000}s...`);
-      console.log(`[EventStream] Attempting to reconnect in ${delay}ms (attempt ${attempt + 1})`);
-
-      reconnectTimerRef.current = setTimeout(connect, delay);
+      const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+      this.reconnectAttempts++;
+      this.setState({ error: `Connection lost. Retrying in ${delay / 1000}s...` });
+      console.log(`[EventStream] Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
+      this.reconnectTimer = setTimeout(() => this.connect(), delay);
     };
-  }, []);
+  }
+
+  public disconnect() {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.eventSource?.close();
+    this.eventSource = null;
+    this.setState({ isConnected: false });
+    console.log('[EventStream] Disconnected from SSE endpoint');
+  }
+
+  public subscribe(eventType: string, callback: (data: any) => void) {
+    const id = Math.random().toString(36).substring(2, 9);
+    if (!this.listeners[eventType]) {
+      this.listeners[eventType] = {};
+    }
+    this.listeners[eventType][id] = callback;
+    return () => {
+      delete this.listeners[eventType][id];
+      if (Object.keys(this.listeners[eventType]).length === 0) {
+        delete this.listeners[eventType];
+      }
+    };
+  }
+}
+
+const eventStreamManager = new EventStreamManager();
+
+export function EventStreamProvider({ children }: { children: React.ReactNode }) {
+  const [, forceUpdate] = useState({});
 
   useEffect(() => {
-    connect();
-    return () => {
-      disconnect();
-    };
-  }, [connect, disconnect]);
+    const callback = () => forceUpdate({});
+    eventStreamManager.registerStateChangeCallback(callback);
+    return () => eventStreamManager.registerStateChangeCallback(() => {});
+  }, []);
 
   const stableValue = useMemo(() => ({
-    subscribe,
-    connect,
-    disconnect,
-  }), [subscribe, connect, disconnect]);
+    subscribe: eventStreamManager.subscribe.bind(eventStreamManager),
+    connect: eventStreamManager.connect.bind(eventStreamManager),
+    disconnect: eventStreamManager.disconnect.bind(eventStreamManager),
+  }), []);
 
   const dynamicValue = useMemo(() => ({
-    isConnected,
-    error,
-    fatalError,
-  }), [isConnected, error, fatalError]);
+    isConnected: eventStreamManager.isConnected,
+    error: eventStreamManager.error,
+    fatalError: eventStreamManager.fatalError,
+  }), [eventStreamManager.isConnected, eventStreamManager.error, eventStreamManager.fatalError]);
 
   return (
     <EventStreamStableContext.Provider value={stableValue}>

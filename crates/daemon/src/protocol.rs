@@ -1,39 +1,33 @@
-use eeg_types::data::{PacketHeader, SensorMeta};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sensors::types::AdcConfig;
 
-/// A JSON message sent to the frontend to provide the full metadata for a stream.
-/// This is sent once when a stream begins or whenever the metadata changes.
-#[derive(Serialize, Debug)]
-pub struct MetaUpdateMsg<'a> {
-    pub message_type: &'static str,
-    pub topic: &'a str,
-    pub meta: &'a SensorMeta,
+/// A message from a client proposing a new configuration.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfigProposal {
+    /// The proposed new ADC configuration.
+    pub config: AdcConfig,
+    /// An optional transient identifier for the request.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
-/// The minimal JSON header for a `data_packet` message.
-/// This is sent with every binary data payload.
-#[derive(Serialize, Debug)]
-pub struct DataPacketHeader<'a> {
-    pub message_type: &'static str,
-    pub topic: &'a str,
-    pub ts_ns: u64,
-    pub batch_size: u32,
-    pub num_channels: u32,
-    pub packet_type: &'a str,
-    pub meta_rev: u32,
-}
-
-impl<'a> DataPacketHeader<'a> {
-    /// Creates a new `DataPacketHeader` from a `PacketHeader` and a topic.
-    pub fn new(header: &'a PacketHeader, topic: &'a str, packet_type: &'a str) -> Self {
-        Self {
-            message_type: "data_packet",
-            topic,
-            ts_ns: header.ts_ns,
-            batch_size: header.batch_size,
-            num_channels: header.num_channels,
-            packet_type,
-            meta_rev: header.meta.meta_rev,
-        }
-    }
+/// A message from the server, either broadcasting an applied configuration
+/// or rejecting a proposal.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
+pub enum ServerMessage {
+    /// Broadcasts the latest, successfully applied configuration.
+    Applied {
+        config: AdcConfig,
+        /// An optional monotonically increasing revision number.
+        #[serde(default)]
+        revision: Option<u64>,
+    },
+    /// Informs a single client that its proposal was rejected.
+    Rejected {
+        reason: String,
+        /// The `request_id` from the original proposal, if any.
+        #[serde(default)]
+        request_id: Option<String>,
+    },
 }
