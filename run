@@ -1,0 +1,4 @@
+#!/bin/bash
+
+SCRIPT_DIR=scripts
+$SCRIPT_DIR/$1.sh
