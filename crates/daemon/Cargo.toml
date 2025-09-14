@@ -23,7 +23,6 @@ csv = "1.2"
 csv_recorder_plugin = { path = "../../plugins/csv_recorder" }
 eeg_types = { path = "../eeg_types" }
 flume = "0.11.0"
-async-stream = "0.3"
 http = "1.1.0"
 futures = "0.3"
 futures-util = "0.3"
@@ -45,11 +44,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4"] }
 dashmap = "5.5"
+tokio-tungstenite = { version = "0.23.1", features = ["native-tls"] }
+url = "2.5.2"
 
 [dev-dependencies]
 tempfile = "3.8"
 tokio-test = "0.4"
-tokio-tungstenite = { version = "0.23.1", features = ["native-tls"] }
 async-trait = "0.1"
 
 [[bin]]
@@ -61,3 +61,7 @@ path = "src/main.rs"
 [[bin]]
 name = "ws_test"
 path = "src/ws_test.rs"
+
+[[bin]]
+name = "data_test"
+path = "src/bin/data_test.rs"
