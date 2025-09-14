@@ -16,16 +16,28 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 struct TestHarness {
     _server_handle: tokio::task::JoinHandle<()>,
     server_addr: SocketAddr,
-    driver: Arc<std::sync::Mutex<Box<dyn AdcDriver + Send>>>,
+    driver: Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>,
 }
 
 impl TestHarness {
     async fn new() -> Self {
-        let driver = Arc::new(std::sync::Mutex::new(Box::new(
+        let driver = Arc::new(tokio::sync::Mutex::new(Box::new(
             MockDriver::new(AdcConfig::default()).unwrap(),
         ) as Box<dyn AdcDriver + Send>));
-
+ 
         let (config_broker, _) = ConfigBroker::new();
+        // Preload initial config so new clients receive an Applied message on connect.
+        config_broker
+            .broadcast_and_update(Arc::new(AdcConfig::default()))
+            .await;
+ 
+        // Set up a minimal data-plane broker and channel required by AppState.
+        let (websocket_sender, _) =
+            tokio::sync::broadcast::channel::<Arc<eeg_types::comms::pipeline::BrokerMessage>>(1);
+        let broker = Arc::new(adc_daemon::websocket_broker::WebSocketBroker::new(
+            websocket_sender.subscribe(),
+        ));
+ 
         let app_state = AppState {
             driver: Some(driver.clone()),
             config_broker: Arc::new(config_broker),
@@ -35,9 +47,9 @@ impl TestHarness {
             event_tx: flume::unbounded().0,
             pipeline_handle: Default::default(),
             source_meta_cache: Default::default(),
-            broker: Default::default(),
+            broker: broker.clone(),
             broker_shutdown_tx: Default::default(),
-            websocket_sender: tokio::sync::broadcast::channel(1).0,
+            websocket_sender,
         };
 
         let app = Router::new()
@@ -98,6 +110,6 @@ async fn test_config_happy_path() {
     assert_eq!(broadcast_config, new_config);
 
     // 4. Verify the driver's config was actually updated
-    let driver_config = harness.driver.lock().unwrap().get_config().unwrap();
+    let driver_config = harness.driver.lock().await.get_config().unwrap();
     assert_eq!(driver_config, new_config);
 }

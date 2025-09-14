@@ -107,7 +107,7 @@ impl WebSocketBroker {
     /// Manages the entire lifecycle of a single client connection.
     async fn handle_client(self: Arc<Self>, ws: WebSocket, client_id: String) {
         let (ws_tx, mut ws_rx) = ws.split();
-  let ws_tx = Arc::new(Mutex::new(ws_tx));
+        let ws_tx = Arc::new(Mutex::new(ws_tx));
         let mut subs: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
         let mut ping_interval = interval(Duration::from_secs(PING_INTERVAL_S));
 
@@ -198,12 +198,18 @@ impl WebSocketBroker {
                                     }
                                 }
                             } else {
-                                warn!("[Client {}] Received malformed control message. Closing.", client_id);
+                                warn!("[Client {}] Received malformed client message: '{}'. Closing.", client_id, txt);
+                                let _ = ws_tx.lock().await.send(Message::Close(None)).await;
                                 break;
                             }
                         },
                         Some(Ok(Message::Close(_))) | None => {
                             info!("[Client {}] Connection closed by client.", client_id);
+                            break;
+                        },
+                        Some(Ok(Message::Binary(_))) => {
+                            warn!("[Client {}] Binary payload from client. Closing connection.", client_id);
+                            let _ = ws_tx.lock().await.send(Message::Close(None)).await;
                             break;
                         },
                         Some(Err(e)) => {

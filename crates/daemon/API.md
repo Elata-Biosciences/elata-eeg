@@ -184,7 +184,8 @@ The subscription process is as follows:
         ```json
         {
           "type": "subscribe",
-          "topic": "eeg_voltage"
+          "topic": "eeg_voltage",
+          "epoch": 1
         }
         ```
 
@@ -201,6 +202,18 @@ The subscription process is as follows:
         ```
 
 A single client can be subscribed to multiple topics simultaneously by sending multiple `subscribe` messages.
+
+##### Quick test with wscat
+- Install: `npm i -g wscat` (or use your package manager)
+- Connect: `wscat -c ws://127.0.0.1:9000/ws/data`
+- After connected, paste this line exactly (single line JSON):
+  `{"type":"subscribe","topic":"eeg_voltage","epoch":1}`
+- Expected:
+  - You should receive a JSON ACK: `{"subscribed":{"topic":"eeg_voltage","metaRev":N}}`
+  - Data frames are binary and may not render in wscat. Meta updates (JSON) may occasionally appear as text messages.
+- Notes:
+  - Sending an untagged message (for example `{"Subscribe":{...}}` or `{"topic":"..."}` without `"type"`) is considered malformed and the server will close the connection by design.
+  - Client-originated binary frames are also rejected and will close the connection.
 
 #### `websocket_sink` Stage
 
