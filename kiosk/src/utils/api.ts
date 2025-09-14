@@ -125,3 +125,92 @@ export const sendCommand = async (pipelineId: string, command: string, params: a
     throw error;
   }
 };
+// WebSocket for configuration management with automatic reconnection
+class ResilientWebSocket {
+  private ws: WebSocket | null = null;
+  private url: string;
+  private reconnectInterval = 1000;
+  private maxReconnectInterval = 30000;
+  private reconnectAttempts = 0;
+
+  constructor(url: string) {
+    this.url = url;
+    if (typeof window !== 'undefined') {
+      this.connect();
+    }
+  }
+
+  private connect() {
+    if (typeof window === 'undefined') return;
+
+    this.ws = new WebSocket(this.url);
+
+    this.ws.onopen = () => {
+      console.log('WebSocket connected to', this.url);
+      this.reconnectAttempts = 0;
+      this.reconnectInterval = 1000;
+      this.onopen?.();
+    };
+
+    this.ws.onmessage = (event) => {
+      this.onmessage?.(event);
+    };
+
+    this.ws.onerror = (event) => {
+      console.error('WebSocket error:', event);
+      this.onerror?.(event);
+    };
+
+    this.ws.onclose = () => {
+      console.log('WebSocket disconnected from', this.url);
+      this.scheduleReconnect();
+      this.onclose?.();
+    };
+  }
+
+  private scheduleReconnect() {
+    this.reconnectAttempts++;
+    const backoffTime = Math.min(
+      this.maxReconnectInterval,
+      this.reconnectInterval * Math.pow(2, this.reconnectAttempts)
+    );
+
+    console.log(`Scheduling reconnect in ${backoffTime / 1000}s`);
+
+    setTimeout(() => this.connect(), backoffTime);
+  }
+
+  public send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
+    } else {
+      console.error('WebSocket is not open. ReadyState:', this.ws?.readyState);
+    }
+  }
+
+  public addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) {
+    this.ws?.addEventListener(type, listener, options);
+  }
+
+  public removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) {
+    this.ws?.removeEventListener(type, listener, options);
+  }
+
+  public onopen: (() => void) | null = null;
+  public onmessage: ((event: MessageEvent) => void) | null = null;
+  public onerror: ((event: Event) => void) | null = null;
+  public onclose: (() => void) | null = null;
+}
+
+let configWebSocketInstance: ResilientWebSocket;
+
+if (typeof window !== 'undefined') {
+  // Use NEXT_PUBLIC_DAEMON_URL as the single source of truth for the daemon's location.
+  // Default to localhost for local development.
+  const daemonUrl = process.env.NEXT_PUBLIC_DAEMON_URL || 'http://localhost:9000';
+  const wsUrl = daemonUrl.replace(/^http/, 'ws') + '/ws/config';
+  configWebSocketInstance = new ResilientWebSocket(wsUrl);
+}
+
+// @ts-ignore
+export { configWebSocketInstance as configWebSocket };

@@ -11,6 +11,7 @@ flume = { workspace = true }
 thread-priority = "0.3"
 rppal = { version = "0.22.1", features = ["hal"] }
 thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 
 [features]
 elata_v1 = ["sensors/ads1299"]

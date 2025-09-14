@@ -2,8 +2,9 @@
 
 import React, { createContext, useContext, useState, ReactNode, useMemo, useRef, useCallback, useEffect } from 'react';
 import { useEventStream } from './EventStreamContext';
-import { usePipeline } from './PipelineContext'; // Import the usePipeline hook
-import { SampleChunk, SensorMeta, MetaUpdateMsg, DataPacketHeader } from '../types/eeg'; // Import shared types
+import { usePipeline } from './PipelineContext';
+import { useEegConfig } from '../hooks/useEegConfig'; // Import the new config hook
+import { SampleChunk, SensorMeta, MetaUpdateMsg, DataPacketHeader } from '../types/eeg';
 
 // Constants for data management
 const MAX_SAMPLE_CHUNKS = 100;
@@ -80,80 +81,11 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   const [shouldConnect, setShouldConnect] = useState(false); // State to control when to connect
   const rawDataSubscribersRef = useRef({ raw: {} as Record<string, RawDataCallback> });
 
-  const { pipelineConfig, pipelineStatus } = usePipeline(); // Get the pipeline state object
-  const { subscribe } = useEventStream();
-  const [sourceReadyMeta, setSourceReadyMeta] = useState<any | null>(null);
-  const lastMetaRevRef = useRef<number | null>(null);
-  const sourceReadyDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const { pipelineStatus } = usePipeline();
+  const { authoritative: config } = useEegConfig(); // Get authoritative config
 
-  const handleSourceReady = useCallback((data: any) => {
-    if (sourceReadyDebounceTimerRef.current) {
-      clearTimeout(sourceReadyDebounceTimerRef.current);
-    }
-
-    sourceReadyDebounceTimerRef.current = setTimeout(() => {
-      if (data.meta) {
-        // Only perform a HARD RESET if the configuration is actually new.
-        if (lastMetaRevRef.current !== null && data.meta.meta_rev <= lastMetaRevRef.current) {
-          console.log(`[EegDataContext] Ignoring stale/duplicate SourceReady event with meta_rev: ${data.meta.meta_rev}`);
-          return;
-        }
-
-        console.log(`[EegDataContext] HARD RESET: Received new SourceReady event. meta_rev: ${data.meta.meta_rev}`, data.meta);
-        lastMetaRevRef.current = data.meta.meta_rev;
-
-        // 1. Clear ALL existing data buffers
-        rawSamplesRef.current = [];
-        sampleTimestamps.current = [];
-
-        // 2. Set the new metadata as the source of truth
-        setSourceReadyMeta(data.meta);
-        setMetadata(prev => ({ ...prev, ['eeg_voltage']: data.meta }));
-
-        // 3. Force a re-render to propagate changes
-        setDataVersion(v => v + 1);
-      }
-    }, 250); // Debounce for 250ms to handle rapid-fire events
-  }, []);
-
-  useEffect(() => {
-    const unsubscribe = subscribe('SourceReady', handleSourceReady);
-    return () => {
-      unsubscribe();
-      if (sourceReadyDebounceTimerRef.current) {
-        clearTimeout(sourceReadyDebounceTimerRef.current);
-      }
-    };
-  }, [subscribe, handleSourceReady]);
-
-  const config = useMemo(() => {
-    if (sourceReadyMeta) {
-      const newChannelCount = sourceReadyMeta.channel_names?.length || 0;
-      return {
-        ...pipelineConfig,
-        channels: Array.from({ length: newChannelCount }, (_, i) => i),
-        sample_rate: sourceReadyMeta.sample_rate || 250,
-      };
-    }
-    
-    if (!pipelineConfig) {
-      return null;
-    }
-
-    const eegSourceStage = pipelineConfig.stages.find(s => s.type === 'eeg_source');
-    let channels: number[] = [];
-    if (eegSourceStage && eegSourceStage.params?.driver?.chips?.length > 0) {
-      // Sum up the number of channels from all chips
-      const channelCount = eegSourceStage.params.driver.chips.reduce((acc: number, chip: any) => acc + (chip.channels?.length || 0), 0);
-      channels = Array.from({ length: channelCount }, (_, i) => i);
-    }
-
-    return {
-      ...pipelineConfig,
-      channels,
-      sample_rate: eegSourceStage?.params.sample_rate || 250,
-    };
-  }, [pipelineConfig, sourceReadyMeta]);
+  // The rest of the component now uses the `config` from the provider.
+  // The legacy SourceReady handling and config derivation can be removed.
  
   // Create a ref to hold the latest config to avoid stale closures in WebSocket handler
   const configRef = useRef(config);
@@ -290,7 +222,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   const configKey = useMemo(() => {
     if (!config) return null;
     // Sort channels to ensure key is consistent regardless of order
-    const sortedChannels = config.channels.slice().sort((a: number, b: number) => a - b).join(',');
+    const sortedChannels = config.channels.slice().sort((a, b) => a.channel_num - b.channel_num).map(c => c.channel_num).join(',');
     return `${config.sample_rate}-${sortedChannels}`;
   }, [config]);
 
@@ -334,19 +266,15 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
 
   // Effect to determine when the system is truly ready
   useEffect(() => {
-    console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'sourceReadyMeta:', sourceReadyMeta);
+    console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'config channels:', config?.channels?.length);
     // Ready when pipeline is started and the final config with channel names is available
-    if (pipelineStatus === 'started' && sourceReadyMeta?.channel_names) {
-      console.log('[EegDataContext] System is ready! Setting isReady to true');
+    if (pipelineStatus === 'started' && config && config.channels && config.channels.length > 0) {
       setIsReady(true);
-      setShouldConnect(true); // Signal that we should connect to data WebSocket
-      
-      // Check if we're in React Strict Mode development double-run scenario
-      // @ts-ignore - Accessing custom property on window object
-      if (!(process.env.NODE_ENV === 'development' && window[systemReadyGuardKey])) {
+      setShouldConnect(true);
+
+      if (!(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
         if (process.env.NODE_ENV === 'development') {
-          // @ts-ignore - Adding custom property to window object
-          window[systemReadyGuardKey] = true;
+          (window as any)[systemReadyGuardKey] = true;
         }
         console.log('[EegDataContext] System is ready. Final configuration has been received.');
       }
@@ -366,7 +294,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
         }
       }
     }
-  }, [pipelineStatus, sourceReadyMeta]);
+  }, [pipelineStatus, config]);
 
   // Handle WebSocket status changes to detect reconnections
   const handleDataUpdate = useCallback((received: boolean) => {
@@ -437,27 +365,26 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
       console.log('[EegDataContext] WebSocket connection established');
       setWsStatus('Connected');
 
-      // Subscribe to both EEG voltage and FFT topics
-      if (sourceReadyMeta?.meta_rev) {
-        // Subscribe to EEG voltage data
+      // Subscribe to both EEG voltage and FFT topics if meta_rev available
+      if (config && (config as any).meta_rev) {
+        const epoch = (config as any).meta_rev;
         const eegSubscription = {
           type: 'subscribe',
           topic: 'eeg_voltage',
-          epoch: sourceReadyMeta.meta_rev,
+          epoch,
         };
         socket.send(JSON.stringify(eegSubscription));
-        console.log(`[EegDataContext] Subscribed to eeg_voltage with epoch ${eegSubscription.epoch}`);
-        
-        // Subscribe to FFT data
+        console.log(`[EegDataContext] Subscribed to eeg_voltage with epoch ${epoch}`);
+
         const fftSubscription = {
           type: 'subscribe',
           topic: 'brain_waves_fft',
-          epoch: sourceReadyMeta.meta_rev,
+          epoch,
         };
         socket.send(JSON.stringify(fftSubscription));
-        console.log(`[EegDataContext] Subscribed to brain_waves_fft with epoch ${fftSubscription.epoch}`);
+        console.log(`[EegDataContext] Subscribed to brain_waves_fft with epoch ${epoch}`);
       } else {
-        console.warn('[EegDataContext] Could not subscribe to data topics: meta_rev is not available.');
+        console.warn('[EegDataContext] Could not subscribe to data topics: config or meta_rev is not available.');
       }
     };
 
@@ -581,7 +508,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
       // @ts-ignore
       window[connectionGuardKey] = false;
     };
-  }, [shouldConnect, sourceReadyMeta]); // Add sourceReadyMeta as a dependency
+  }, [shouldConnect, config]);
 
   // This useEffect manages the WebSocket connection lifecycle.
   // It runs ONLY when shouldConnect changes from false to true.

@@ -230,7 +230,7 @@ impl Executor {
                                             draining = true;
                                         }
                                         other => {
-                                            if let Err(e) = node.stage.lock().unwrap().control(&other, &mut context) {
+                                            if let Err(e) = futures::executor::block_on(node.stage.lock()).control(&other, &mut context) {
                                                 error!("Control error on '{}': {}", node.name, e);
                                             }
                                         }
@@ -245,7 +245,7 @@ impl Executor {
                                     // For now, we just stop producing and let it halt on the next check.
                                     Ok(None)
                                 } else {
-                                    node.stage.lock().unwrap().produce(&mut context)
+                                    futures::executor::block_on(node.stage.lock()).produce(&mut context)
                                 };
 
                                 match produced {
@@ -283,7 +283,7 @@ impl Executor {
 
                                 // First, check for control messages non-blockingly to prevent starvation
                                 if let Ok(cmd) = control_rx.try_recv() {
-                                    let mut stage = node.stage.lock().unwrap();
+                                    let mut stage = futures::executor::block_on(node.stage.lock());
                                     match cmd {
                                         ControlCommand::Drain => {
                                             info!("Draining stage '{}'", stage.id());
@@ -328,7 +328,7 @@ impl Executor {
                                         }
                                     }
                                     Ok(Ok(StageMessage::Control(cmd))) => {
-                                        let mut stage = node.stage.lock().unwrap();
+                                        let mut stage = futures::executor::block_on(node.stage.lock());
                                         match cmd {
                                             ControlCommand::Drain => {
                                                 info!("Draining stage '{}'", stage.id());
@@ -478,7 +478,7 @@ fn process_packet(
     output_txs_by_port: &HashMap<String, Vec<Sender<Arc<RtPacket>>>>,
     fatal_error_tx: &Sender<FatalError>,
 ) -> bool {
-    let mut stage_guard = node.stage.lock().unwrap();
+    let mut stage_guard = futures::executor::block_on(node.stage.lock());
     let stage_id = stage_guard.id().to_string();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

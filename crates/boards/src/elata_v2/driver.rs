@@ -16,13 +16,14 @@ use sensors::{
     AdcConfig, AdcDriver, DriverError, DriverStatus,
     ads1299::driver::Ads1299Driver,
 };
-const START_PIN: u8 = 22; // GPIO for START pulse
+
+use crate::elata_v2::board::{ElataV2BoardConfig, CsPinAssignment, RegisterConfig};
 pub struct ElataV2Driver {
     chip_drivers: Vec<Ads1299Driver>,
-    bus: Arc<SpiBus>,
     gpio: Arc<Gpio>,
     status: Arc<Mutex<DriverStatus>>,
     config: AdcConfig,
+    board_config: ElataV2BoardConfig,
     start_pin: Arc<Mutex<Option<OutputPin>>>,
     drdy_pin: Arc<Mutex<Option<InputPin>>>,
     sample_rx: Receiver<Vec<i32>>,
@@ -30,30 +31,24 @@ pub struct ElataV2Driver {
     stop_acq_thread: Arc<AtomicBool>,
 }
 impl ElataV2Driver {
-    pub fn new(config: AdcConfig) -> Result<Self, DriverError> {
+    pub fn new(config: AdcConfig, board_config: ElataV2BoardConfig) -> Result<Self, DriverError> {
         let gpio = Arc::new(Gpio::new()?);
         info!("GPIO initialized.");
         let mut chip_drivers = Vec::with_capacity(config.chips.len());
         let bus = Arc::new(SpiBus::new(
             Bus::Spi0,
-            1_240_000,
+            1_000_000,
             Mode::Mode1,
         )?);
         info!("SPI bus initialized.");
         for (i, chip_config) in config.chips.iter().enumerate() {
-            // Define CS pins internally based on chip index for ElataV2 hardware
-            let cs_pin_num = match i {
-                0 => 7,  // Chip 0 uses CS pin 7
-                1 => 8,  // Chip 1 uses CS pin 8
-                _ => return Err(DriverError::ConfigurationError(
-                    format!("ElataV2 driver only supports 2 chips, but chip {} was provided", i)
-                )),
-            };
-            
+            let cs_pin_num = board_config.get_cs_pin(i)
+                .map_err(DriverError::ConfigurationError)?;
+
             let mut cs_pin = gpio.get(cs_pin_num)?.into_output();
             cs_pin.set_high();
             info!("CS pin {} initialized for software control.", cs_pin_num);
-            
+
             let driver = Ads1299Driver::new(chip_config.clone(), bus.clone(), cs_pin)?;
             chip_drivers.push(driver);
         }
@@ -62,16 +57,22 @@ impl ElataV2Driver {
         let (sample_tx, sample_rx) = flume::bounded(4096);
         Ok(Self {
             chip_drivers,
-            bus,
             gpio,
             status: Arc::new(Mutex::new(DriverStatus::Stopped)),
             config,
+            board_config,
             start_pin: Arc::new(Mutex::new(None)),
             drdy_pin: Arc::new(Mutex::new(None)),
             sample_rx,
             acq_thread_handle: None,
             stop_acq_thread: Arc::new(AtomicBool::new(false)),
         })
+    }
+    
+    /// Create a new driver with default board configuration
+    /// This maintains backward compatibility with existing code
+    pub fn with_default_board(config: AdcConfig) -> Result<Self, DriverError> {
+        Self::new(config, ElataV2BoardConfig::default())
     }
 }
 impl AdcDriver for ElataV2Driver {
@@ -93,7 +94,7 @@ impl AdcDriver for ElataV2Driver {
             let chip_info = &self.config.chips[i];
             let gain_mask = registers::gain_to_reg_mask(self.config.gain)?;
             let sps_mask = registers::sps_to_reg_mask(self.config.sample_rate)?;
-            let pd_bias = if i == 0 { PD_BIAS } else { 0x00 };
+            let pd_bias = if self.board_config.is_bias_enabled(i) { PD_BIAS } else { 0x00 };
             let ch_settings: Vec<(u8, u8)> = (0..8)
                 .map(|ch_idx| {
                     let setting = if chip_info.channels.contains(&ch_idx) {
@@ -105,9 +106,19 @@ impl AdcDriver for ElataV2Driver {
                 })
                 .collect();
             let active_ch_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
-            // the setup is NOT daisy chained. running in cascade mode
+            // Configure registers based on board configuration
+            let config1_value = if self.board_config.register_config.daisy_chain {
+                CONFIG1_REG | sps_mask
+            } else{
+                CONFIG1_REG | sps_mask | DAISY_DISABLE
+            };
+            
+            // The BIAS_SENSP register is a bitmask of active channels for the bias derivation.
+            // We calculate it directly from the channels configured in the pipeline.
+            let bias_sens_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
+            
             chip.initialize_chip(
-                CONFIG1_REG | sps_mask | DAISY_DISABLE,
+                config1_value,
                 CONFIG2_REG,
                 CONFIG3_REG | BIASREF_INT | PD_REFBUF | pd_bias,
                 CONFIG4_REG,
@@ -115,7 +126,7 @@ impl AdcDriver for ElataV2Driver {
                 MISC1_REG | SRB1,
                 &ch_settings,
                 active_ch_mask,
-                BIAS_SENS_OFF_MASK
+                bias_sens_mask
             )?;
             if chip_info.channels.is_empty() {
                 info!("Chip {} initialized with 0 channels; will remain in standby and be skipped during acquisition.", i);
@@ -215,7 +226,7 @@ impl AdcDriver for ElataV2Driver {
         self.acq_thread_handle = Some(acq_thread);
         // 4. Now, start data acquisition on all chips
         // 4. Assert START pin HIGH after all chips are fully configured
-        let mut start_pin = self.gpio.get(START_PIN)?.into_output();
+        let mut start_pin = self.gpio.get(self.board_config.start_pin)?.into_output();
         start_pin.set_high();
         thread::sleep(Duration::from_millis(1));
         
@@ -283,11 +294,7 @@ impl AdcDriver for ElataV2Driver {
     fn reconfigure(&mut self, config: &AdcConfig) -> Result<(), DriverError> {
         // Pre-validate the incoming configuration BEFORE touching the running hardware.
         // ElataV2 boards always have exactly 2 chips, and require at least one active channel.
-        if config.chips.len() != 2 {
-            return Err(DriverError::ConfigurationError(
-                "ElataV2Driver requires exactly 2 chip configurations".to_string(),
-            ));
-        }
+        // Configuration validation can be enhanced here, e.g., checking chip count against board config
         let total_channels: usize = config.chips.iter().map(|c| c.channels.len()).sum();
         if total_channels == 0 {
             return Err(DriverError::ConfigurationError(
@@ -300,21 +307,20 @@ impl AdcDriver for ElataV2Driver {
         
         // Recreate chip drivers with new configuration
         self.chip_drivers.clear();
+        let bus = Arc::new(SpiBus::new(
+            Bus::Spi0,
+            1_000_000,
+            Mode::Mode1,
+        )?);
         for (i, chip_config) in config.chips.iter().enumerate() {
-            // Define CS pins internally based on chip index for ElataV2 hardware
-            let cs_pin_num = match i {
-                0 => 7,  // Chip 0 uses CS pin 7
-                1 => 8,  // Chip 1 uses CS pin 8
-                _ => return Err(DriverError::ConfigurationError(
-                    format!("ElataV2 driver only supports 2 chips, but chip {} was provided", i)
-                )),
-            };
-            
+            let cs_pin_num = self.board_config.get_cs_pin(i)
+                .map_err(DriverError::ConfigurationError)?;
+
             let mut cs_pin = self.gpio.get(cs_pin_num)?.into_output();
             cs_pin.set_high();
             info!("CS pin {} initialized for software control.", cs_pin_num);
-            
-            let driver = Ads1299Driver::new(chip_config.clone(), self.bus.clone(), cs_pin)?;
+
+            let driver = Ads1299Driver::new(chip_config.clone(), bus.clone(), cs_pin)?;
             self.chip_drivers.push(driver);
         }
         

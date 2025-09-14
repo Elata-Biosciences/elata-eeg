@@ -7,8 +7,11 @@ use backtrace::Backtrace;
 use tokio::sync::Mutex;
 
 use adc_daemon::plugin_supervisor::PluginSupervisor;
-use adc_daemon::api::{AppState, PipelineHandle};
-use adc_daemon::websocket_broker::WebSocketBroker;
+use adc_daemon::{
+    api::{AppState, PipelineHandle},
+    config::ConfigBroker,
+    websocket_broker::WebSocketBroker,
+};
 use eeg_types::comms::pipeline::BrokerMessage;
 use clap::{Arg, Command};
 use pipeline::config::SystemConfig;
@@ -60,6 +63,7 @@ async fn main() -> Result<(), DriverError> {
     let config_path = "pipelines/default.yaml";
     let config_str = fs::read_to_string(config_path).map_err(|e| DriverError::IoError(e.to_string()))?;
     let initial_config: SystemConfig = serde_yaml::from_str(&config_str).map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
+    tracing::info!("Loaded initial config: {:?}", initial_config);
 
     let mut registry = StageRegistry::new();
     pipeline::stages::register_builtin_stages(&mut registry);
@@ -82,12 +86,12 @@ async fn main() -> Result<(), DriverError> {
         .and_then(|t| t.as_str())
         .unwrap_or("Mock");
 
-    let driver: Option<Arc<std::sync::Mutex<Box<dyn AdcDriver + Send>>>> = if use_mock || driver_type == "Mock" {
+    let driver: Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>> = if use_mock || driver_type == "Mock" {
         tracing::info!("Using mock EEG driver");
         // Parse the driver configuration from the pipeline
         let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
             .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
-        Some(Arc::new(std::sync::Mutex::new(Box::new(MockDriver::new(
+        Some(Arc::new(tokio::sync::Mutex::new(Box::new(MockDriver::new(
             adc_config,
         )?))))
     } else {
@@ -95,8 +99,8 @@ async fn main() -> Result<(), DriverError> {
         // Parse the driver configuration from the pipeline
         let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
             .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
-        let mut driver_instance = ElataV2Driver::new(adc_config)?;
-        Some(Arc::new(std::sync::Mutex::new(Box::new(driver_instance))))
+        let driver_instance = ElataV2Driver::with_default_board(adc_config)?;
+        Some(Arc::new(tokio::sync::Mutex::new(Box::new(driver_instance))))
     };
 
 
@@ -120,7 +124,6 @@ async fn main() -> Result<(), DriverError> {
 
     let (executor, fatal_error_rx, control_bus, mut producer_txs) = Executor::new(graph);
     tracing::info!("Default pipeline executor started.");
-
 
     let pipeline_handle = Arc::new(tokio::sync::Mutex::new(Some(PipelineHandle {
         id: "default".to_string(),
@@ -204,6 +207,10 @@ async fn main() -> Result<(), DriverError> {
     let broker = Arc::new(WebSocketBroker::new(ws_rx));
     broker.clone().start(broker_shutdown_rx);
 
+    // --- Config Broker ---
+    let (config_broker, _) = ConfigBroker::new();
+    let config_broker = Arc::new(config_broker);
+
     // --- App State ---
     let app_state = AppState {
         pipelines: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -211,6 +218,7 @@ async fn main() -> Result<(), DriverError> {
         pipeline_handle,
         source_meta_cache,
         broker,
+        config_broker,
         broker_shutdown_tx: Arc::new(Mutex::new(Some(broker_shutdown_tx))),
         websocket_sender: ws_tx,
         driver: driver.clone(),

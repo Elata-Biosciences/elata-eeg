@@ -89,9 +89,16 @@ pub struct FftConfig {
 pub enum WsControlCommand {
     SetTestState { value: u32 },
 }
+/// Filter configuration settings
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FilterConfig {
+    pub high_pass: f32,
+    pub low_pass: f32,
+    pub powerline_filter_hz: Option<f32>,
+}
 
 /// System status and control events
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SystemEvent {
     /// Timestamp of the event
     pub timestamp: u64,
@@ -100,7 +107,7 @@ pub struct SystemEvent {
 }
 
 /// Types of system events
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SystemEventType {
     /// Recording started with filename
     RecordingStarted(String),

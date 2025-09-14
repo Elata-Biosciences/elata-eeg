@@ -58,3 +58,23 @@ export interface SampleChunk {
   samples: Float32Array | Int32Array; // Can be either f32 or i32
   timestamp: number; // The timestamp of the first sample in the chunk
 }
+export interface AdcChannelConfig {
+  channel_on: boolean;
+  channel_num: number;
+  gain: number;
+  input_type: string;
+  bias_sense: boolean;
+  pga_p: string;
+  pga_n: string;
+  srb2: boolean;
+}
+
+export interface AdcConfig {
+  board_driver: string;
+  sample_rate: number;
+  channels: AdcChannelConfig[];
+  chips: any[]; // Define more strictly if chip structure is known
+  powerline_filter_hz: number | null;
+  gain: number;
+  meta_rev?: number; // Add optional meta_rev
+}

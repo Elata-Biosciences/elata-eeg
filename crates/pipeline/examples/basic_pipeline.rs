@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         channel_names: vec!["ch0".to_string(), "ch1".to_string(), "ch2".to_string(), "ch3".to_string()],
         #[cfg(feature = "meta-tags")]
         tags: Default::default(),
+        filter: None,
     });
 
     let allocator = Arc::new(PacketAllocator::with_capacity(1, 1, 1, 4));
@@ -83,12 +84,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Instantiate the stages
     let (event_tx, _) = mpsc::unbounded::<PipelineEvent>();
+    let system_config = pipeline::config::SystemConfig {
+        version: "1.0".to_string(),
+        metadata: Default::default(),
+        stages: vec![],
+    };
     let init_ctx = StageInitCtx {
         event_tx: &event_tx,
         allocator: &allocator,
         driver: &None,
         sample_rate: 250.0,
         websocket_sender: None,
+        system_config: &system_config,
     };
     let (mut to_voltage_stage, _) = ToVoltageFactory::default().create(&StageConfig {
         name: "to_voltage".to_string(),

@@ -1,0 +1,14 @@
+id = "csv_recorder"
+name = "CSV Recorder"
+version = "0.1.0"
+author = "Elata"
+
+[stages]
+types = ["csv_recorder"]
+
+[commands]
+start_recording = "StartRecording"
+stop_recording = "StopRecording"
+
+[settings]
+recordings_directory = "recordings"

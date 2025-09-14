@@ -1,6 +1,6 @@
 version: "1.0"
 metadata:
-  name: "E2E Test Pipeline"
+  name: "E2E with the 32 channel ElataV2 driver"
   description: "A pipeline to acquire data from an EEG board, convert it to voltage, and save it to a CSV file."
   version: "1.1.0"
 stages:
@@ -14,7 +14,8 @@ stages:
         vref: 4.5
         gain: 24.0
         chips:
-          - channels: [0, 1, 2, 3, 4, 5, 6, 7]
+          - channels: [0, 1, 2, 3]
+          - channels: [0, 1, 2, 3, 4]
       batch_size: 32
     outputs: ["raw_data"]
 

@@ -1,4 +1,5 @@
 
+use crate::event::FilterConfig;
 use serde::{Deserialize, Serialize};
 
 /// Represents errors that can occur within a sensor driver.
@@ -60,6 +61,10 @@ pub struct SensorMeta {
     #[cfg(feature = "meta-tags")]
     #[serde(default)]
     pub tags: HashMap<String, String>,
+
+    /// Optional filter settings applied to the data source.
+    #[serde(default)]
+    pub filter: Option<FilterConfig>,
 }
 
 
@@ -80,6 +85,7 @@ impl Default for SensorMeta {
             channel_names: Vec::new(),
             #[cfg(feature = "meta-tags")]
             tags: HashMap::new(),
+            filter: None,
         }
     }
 }

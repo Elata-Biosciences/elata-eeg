@@ -79,7 +79,7 @@ impl Debug for ControlCommand {
 }
 
 /// Events sent from the pipeline back to the control plane (e.g., the `device` crate).
-use eeg_types::data::SensorMeta;
+use eeg_types::{data::SensorMeta, event::SystemEvent};
 
 #[derive(Debug, Serialize)]
 pub enum PipelineEvent {
@@ -117,6 +117,8 @@ pub enum PipelineEvent {
     SourceReady { meta: SensorMeta },
     /// Indicates that the entire pipeline has failed due to a panic.
     PipelineFailed { error: String },
+    /// Encapsulates a system-level event.
+    System(SystemEvent),
 }
 
 impl PartialEq for PipelineEvent {
@@ -139,6 +141,9 @@ impl PartialEq for PipelineEvent {
             (Self::ConfigUpdated { config: l }, Self::ConfigUpdated { config: r }) => l == r,
             (Self::SourceReady { meta: l }, Self::SourceReady { meta: r }) => l == r,
             (Self::PipelineFailed { error: l }, Self::PipelineFailed { error: r }) => l == r,
+            // Note: SystemEvent does not implement PartialEq, so we can't directly compare them.
+            // This implementation will consider two System events unequal.
+            // If equality is needed, SystemEvent must derive PartialEq.
             _ => false,
         }
     }

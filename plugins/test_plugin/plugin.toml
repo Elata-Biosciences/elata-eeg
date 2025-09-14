@@ -1,0 +1,7 @@
+id = "test_plugin"
+name = "Test Plugin"
+version = "0.1.0"
+author = "Elata"
+
+[stages]
+types = ["test_stage"]

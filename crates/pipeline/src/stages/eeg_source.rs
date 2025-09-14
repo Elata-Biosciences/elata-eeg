@@ -5,7 +5,7 @@
 
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 use std::time::Duration;
 
@@ -19,8 +19,11 @@ use crate::data::{PacketData, PacketHeader, RtPacket};
 use crate::error::StageError;
 use crate::registry::StageFactory;
 use crate::stage::{Stage, StageContext, StageInitCtx};
+use crate::stages::gui_filter::TripleIirConfig;
 use eeg_types::data::SensorMeta;
+use eeg_types::event::FilterConfig;
 use flume::{Receiver, Sender};
+use tokio::sync::Mutex;
 
 /// Factory for creating `EegSource` stages.
 #[derive(Default)]
@@ -42,13 +45,7 @@ impl StageFactory for EegSourceFactory {
             .clone()
             .ok_or_else(|| StageError::BadConfig("Driver not available in context".to_string()))?;
 
-        let stage = EegSource::new(
-            config.name.clone(),
-            driver,
-            params.batch_size,
-            config.outputs.clone(),
-            init_ctx.event_tx.clone(),
-        )?;
+        let stage = EegSource::new(config, driver, params.batch_size, init_ctx)?;
 
         // Create a channel for this producer stage
         let (_tx, rx) = flume::unbounded();
@@ -66,7 +63,7 @@ struct EegSourceParams {
 /// The `EegSource` stage.
 pub struct EegSource {
     id: String,
-    driver: Arc<Mutex<Box<dyn AdcDriver + Send>>>,
+    driver: Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>,
     batch_size: usize,
     outputs: Vec<String>,
     event_tx: Sender<PipelineEvent>,
@@ -77,13 +74,15 @@ pub struct EegSource {
 
 impl EegSource {
     pub fn new(
-        id: String,
-        driver: Arc<Mutex<Box<dyn AdcDriver + Send>>>,
+        config: &StageConfig,
+        driver: Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>,
         batch_size: usize,
-        outputs: Vec<String>,
-        event_tx: Sender<PipelineEvent>,
+        init_ctx: &StageInitCtx,
     ) -> Result<Self, StageError> {
-        let mut driver_guard = driver.lock().unwrap();
+        let id = config.name.clone();
+        let outputs = config.outputs.clone();
+        let event_tx = init_ctx.event_tx.clone();
+        let mut driver_guard = futures::executor::block_on(driver.lock());
         if let Err(e) = driver_guard.initialize() {
             log::error!("Failed to initialize driver: {}", e);
             return Err(StageError::DriverError(e.to_string()));
@@ -97,11 +96,23 @@ impl EegSource {
         log::info!("Driver configured with {} total channels", initial_num_channels);
 
         let meta_rev_counter = Arc::new(AtomicUsize::new(1));
-        let initial_sensor_meta =
-            Arc::new(create_sensor_meta_from_config(&initial_config, &meta_rev_counter));
+        let mut initial_sensor_meta =
+            create_sensor_meta_from_config(&initial_config, &meta_rev_counter);
+
+        // Find the gui_filter config and attach it to the metadata
+        if let Some(gui_filter_config) = init_ctx.system_config.stages.iter().find(|s| s.name == "gui_filter") {
+            if let Ok(filter_params) = serde_json::from_value::<TripleIirConfig>(serde_json::to_value(&gui_filter_config.params)?) {
+                initial_sensor_meta.filter = Some(FilterConfig {
+                    high_pass: filter_params.high_pass,
+                    low_pass: filter_params.low_pass,
+                    powerline_filter_hz: filter_params.powerline_filter_hz,
+                });
+            }
+        }
+
         if event_tx
             .send(PipelineEvent::SourceReady {
-                meta: (*initial_sensor_meta).clone(),
+                meta: initial_sensor_meta.clone(),
             })
             .is_err()
         {
@@ -156,6 +167,7 @@ fn create_sensor_meta_from_config(
         channel_names,
         #[cfg(feature = "meta-tags")]
         tags: std::collections::HashMap::new(),
+        filter: None,
     }
 }
 
@@ -186,7 +198,7 @@ impl Stage for EegSource {
                             log::info!("Reconfiguring driver...");
                             // Capture old shape for comparison
                             let (shape_before, reconfig_result) = {
-                                let mut driver_guard = self.driver.lock().unwrap();
+                                let mut driver_guard = futures::executor::block_on(self.driver.lock());
                                 let old_cfg = driver_guard.get_config().unwrap_or_else(|_| new_config.clone());
                                 let before = (
                                     old_cfg.sample_rate,
@@ -257,7 +269,7 @@ impl Stage for EegSource {
         _ctx: &mut StageContext,
     ) -> Result<Option<Vec<(String, Arc<RtPacket>)>>, StageError> {
         let (samples, timestamp, num_channels, sensor_meta) = {
-            let mut driver_guard = self.driver.lock().unwrap();
+            let mut driver_guard = futures::executor::block_on(self.driver.lock());
             let config = driver_guard.get_config().unwrap();
             let num_channels = config.chips.iter().map(|c| c.channels.len()).sum();
             let sensor_meta = Arc::new(create_sensor_meta_from_config(&config, &self.meta_rev_counter));

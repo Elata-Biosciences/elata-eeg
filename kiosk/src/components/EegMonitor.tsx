@@ -4,7 +4,7 @@ import React from 'react'; // Added to resolve React.Fragment error
 import { useRef, useState, useEffect, useContext } from 'react';
 import EegRecordingControls from './EegRecordingControls';
 import { useEegStatus } from '../context/EegDataContext';
-import { useEegConfig } from './EegConfig';
+import { useEegConfig } from '@/hooks/useEegConfig';
 import { usePipeline } from '@/context/PipelineContext';
 import { useEventStream, useEventStreamData } from '../context/EventStreamContext';
 import EegDataVisualizer from './EegDataVisualizer';
@@ -18,23 +18,20 @@ export default function EegMonitorWebGL() {
   const [lastActiveDataView, setLastActiveDataView] = useState<DataView>('signalGraph');
   
   // configWebSocket state is no longer needed as we use SSE for configuration updates
-  const [configUpdateStatus, setConfigUpdateStatus] = useState<string | null>(null); // Kept for user feedback
   const [uiVoltageScaleFactor, setUiVoltageScaleFactor] = useState<number>(1.0); // Added for UI Voltage Scaling
   const settingsScrollRef = useRef<HTMLDivElement>(null); // Ref for settings scroll container
   const [canScrollSettings, setCanScrollSettings] = useState(false); // True if settings panel has enough content to scroll
   const [isAtSettingsBottom, setIsAtSettingsBottom] = useState(false); // True if scrolled to the bottom of settings
   const showSignalButtonRef = useRef<HTMLButtonElement>(null); // Ref for show signal button
 
-  // useRef for tracking last configuration to prevent duplicate commands
-  const lastConfigRef = useRef<any>(null);
-
   // Get all data and config from the new central context
-  const { config, updateConfig } = useEegConfig();
+  const { authoritative: config, draft, setDraft, applyConfig, pending, error } = useEegConfig();
   const { dataStatus } = useEegStatus();
   const { dataReceived, driverError, wsStatus } = dataStatus;
   const { fatalError } = useEventStreamData();
   const { subscribe } = useEventStream();
   const [isRecording, setIsRecording] = useState(false);
+  const [filterConfig, setFilterConfig] = useState<any>(null);
 
   useEffect(() => {
     const handleRecordingState = (data: any) => {
@@ -50,64 +47,11 @@ export default function EegMonitorWebGL() {
   }, [subscribe]);
 
   // State for UI selections, initialized from config when available
-  const [selectedChannelCount, setSelectedChannelCount] = useState<string | undefined>(undefined);
-  const [selectedSampleRate, setSelectedSampleRate] = useState<string | undefined>(undefined);
-  const [selectedPowerlineFilter, setSelectedPowerlineFilter] = useState<string | undefined>(undefined);
-  const [selectedGain, setSelectedGain] = useState<string | undefined>(undefined);
 
-  useEffect(() => {
-    if (config) {
-      if (config.channels?.length !== undefined) {
-        setSelectedChannelCount(String(config.channels.length));
-      }
-      if (config.sample_rate !== undefined) {
-        setSelectedSampleRate(String(config.sample_rate));
-      }
-      if ((config as any).gain !== undefined) {
-        const g = Number((config as any).gain);
-        const allowed = [1, 2, 4, 6, 8, 12, 24];
-        const normalized = allowed.includes(g) ? g : allowed.reduce((prev, curr) => Math.abs(curr - g) < Math.abs(prev - g) ? curr : prev, allowed[0]);
-        setSelectedGain(String(normalized));
-      }
-      if (config.powerline_filter_hz !== undefined) {
-        setSelectedPowerlineFilter(config.powerline_filter_hz === null ? 'off' : String(config.powerline_filter_hz));
-      }
-    }
-  }, [config]);
 
-  const { sendPowerlineFilterCommand } = usePipeline();
-
-  const handleUpdateConfig = () => {
-    if (isRecording) {
-      setConfigUpdateStatus('Cannot change configuration during recording.');
-      return;
-    }
-
-    // Ensure all selections are made before proceeding
-    if (selectedChannelCount === undefined || selectedSampleRate === undefined || selectedPowerlineFilter === undefined || selectedGain === undefined) {
-      setConfigUpdateStatus('Please make a selection for all configuration options.');
-      return;
-    }
-
-    const numChannels = parseInt(selectedChannelCount, 10);
-    const sampleRate = parseInt(selectedSampleRate, 10);
-    const powerlineFilter = selectedPowerlineFilter === 'off' ? null : parseInt(selectedPowerlineFilter, 10);
-    const gain = parseInt(selectedGain, 10);
-
-    setConfigUpdateStatus('Sending configuration update...');
-    try {
-      // Simplified call to centralized updateConfig function.
-      // It will handle constructing the full, valid payload.
-      updateConfig({
-        channels: numChannels,
-        sample_rate: sampleRate,
-        powerline_filter_hz: powerlineFilter,
-        gain,
-      });
-      setConfigUpdateStatus('Configuration update sent successfully.');
-    } catch (error) {
-      console.error('Failed to send configuration update:', error);
-      setConfigUpdateStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  const handleConfigChange = (field: string, value: any) => {
+    if (draft) {
+      setDraft({ ...draft, [field]: value });
     }
   };
  
@@ -118,7 +62,7 @@ export default function EegMonitorWebGL() {
     }
   }, [activeView]);
 
-  const UI_SCALE_FACTORS = [0.125, 0.25, 0.5, 1, 2, 4, 8];
+  const UI_SCALE_FACTORS = [0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128];
 
   const getViewName = (view: DataView | 'settings'): string => {
     switch (view) {
@@ -435,21 +379,9 @@ export default function EegMonitorWebGL() {
           }}>
             
             {/* Configuration Update Status */}
-            {configUpdateStatus && (
-              <div className="p-3 mb-4 rounded-lg text-sm" style={{
-                fontFamily: 'var(--font-family-system)',
-                backgroundColor: configUpdateStatus.startsWith('Error') 
-                  ? 'color-mix(in srgb, var(--color-accent-red) 20%, transparent)'
-                  : 'color-mix(in srgb, var(--color-elata-green) 20%, transparent)',
-                border: `1px solid ${configUpdateStatus.startsWith('Error') 
-                  ? 'color-mix(in srgb, var(--color-accent-red) 30%, transparent)'
-                  : 'color-mix(in srgb, var(--color-elata-green) 30%, transparent)'}`,
-                color: configUpdateStatus.startsWith('Error') 
-                  ? 'var(--color-accent-red)'
-                  : 'var(--color-elata-green)',
-                animation: 'fadeInUp 0.4s ease-out forwards'
-              }}>
-                {configUpdateStatus}
+            {error && (
+              <div className="p-2 mb-4 rounded text-sm bg-red-800">
+                {error}
               </div>
             )}
 
@@ -459,23 +391,24 @@ export default function EegMonitorWebGL() {
                 fontFamily: 'var(--font-family-ui)',
                 color: 'var(--color-off-black)'
               }}>Channels</label>
-              <CustomSelect
+              <select
                 id="channel-count"
-                value={selectedChannelCount ?? ''}
-                onChange={setSelectedChannelCount}
-                disabled={!config}
-                options={[...Array(17).keys()].map(i => ({
-                  value: i.toString(),
-                  label: i === 0 ? 'All Off' : `${i} channel${i !== 1 ? 's' : ''}`
-                }))}
-                placeholder="Select channels..."
-                onFocus={() => {
-                  setTimeout(() => {
-                    const element = document.querySelector('[data-setting="channels"]');
-                    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }, 100);
-                }}
-              />
+                value={draft?.channels?.length ?? ''}
+                onChange={(e) => handleConfigChange('channels', Array.from({ length: parseInt(e.target.value, 10) }, (_, i) => ({
+                  channel_on: true,
+                  channel_num: i,
+                  gain: draft?.channels[i]?.gain || 24,
+                  input_type: draft?.channels[i]?.input_type || 'Normal',
+                  bias_sense: draft?.channels[i]?.bias_sense || false,
+                  pga_p: draft?.channels[i]?.pga_p || 'x',
+                  pga_n: draft?.channels[i]?.pga_n || 'x',
+                  srb2: draft?.channels[i]?.srb2 || false,
+                })))}
+                className="w-full p-2 rounded bg-gray-700 border border-gray-600"
+                disabled={!draft || isRecording || pending}
+              >
+                {[...Array((draft?.chips?.length || 1) * 8 + 1).keys()].map(i => <option key={i} value={i}>{i === 0 ? 'All Off' : `${i} channel${i !== 1 ? 's' : ''}`}</option>)}
+              </select>
             </div>
 
             {/* Sample Rate */}
@@ -484,23 +417,15 @@ export default function EegMonitorWebGL() {
                 fontFamily: 'var(--font-family-ui)',
                 color: 'var(--color-off-black)'
               }}>Sample Rate (Hz)</label>
-              <CustomSelect
+              <select
                 id="sample-rate"
-                value={selectedSampleRate ?? ''}
-                onChange={setSelectedSampleRate}
-                disabled={!config}
-                options={[250, 500, 1000, 2000].map(rate => ({
-                  value: rate.toString(),
-                  label: `${rate} Hz`
-                }))}
-                placeholder="Select sample rate..."
-                onFocus={() => {
-                  setTimeout(() => {
-                    const element = document.querySelector('[data-setting="sample-rate"]');
-                    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }, 100);
-                }}
-              />
+                value={draft?.sample_rate ?? ''}
+                onChange={(e) => handleConfigChange('sample_rate', parseInt(e.target.value, 10))}
+                className="w-full p-2 rounded bg-gray-700 border border-gray-600"
+                disabled={!draft || isRecording || pending}
+              >
+                {[250, 500, 1000, 2000].map(rate => <option key={rate} value={rate}>{rate}</option>)}
+              </select>
             </div>
 
             {/* Gain */}
@@ -509,23 +434,15 @@ export default function EegMonitorWebGL() {
                 fontFamily: 'var(--font-family-ui)',
                 color: 'var(--color-off-black)'
               }}>Gain</label>
-              <CustomSelect
+              <select
                 id="gain"
-                value={selectedGain ?? ''}
-                onChange={setSelectedGain}
-                disabled={!config}
-                options={[1, 2, 4, 6, 8, 12, 24].map(g => ({
-                  value: g.toString(),
-                  label: `${g}x`
-                }))}
-                placeholder="Select gain..."
-                onFocus={() => {
-                  setTimeout(() => {
-                    const element = document.querySelector('[data-setting="gain"]');
-                    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }, 100);
-                }}
-              />
+                value={(draft as any)?.gain ?? ''}
+                onChange={(e) => handleConfigChange('gain', parseInt(e.target.value, 10))}
+                className="w-full p-2 rounded bg-gray-700 border border-gray-600"
+                disabled={!draft || isRecording || pending}
+              >
+                {[1, 2, 4, 6, 8, 12, 24].map(g => <option key={g} value={g}>{g}x</option>)}
+              </select>
             </div>
 
             {/* Powerline Filter */}
@@ -534,24 +451,17 @@ export default function EegMonitorWebGL() {
                 fontFamily: 'var(--font-family-ui)',
                 color: 'var(--color-off-black)'
               }}>Powerline Filter</label>
-              <CustomSelect
+              <select
                 id="powerline-filter"
-                value={selectedPowerlineFilter ?? 'off'}
-                onChange={setSelectedPowerlineFilter}
-                disabled={!config}
-                options={[
-                  { value: 'off', label: 'Off' },
-                  { value: '50', label: '50 Hz' },
-                  { value: '60', label: '60 Hz' }
-                ]}
-                placeholder="Select filter..."
-                onFocus={() => {
-                  setTimeout(() => {
-                    const element = document.querySelector('[data-setting="powerline"]');
-                    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }, 100);
-                }}
-              />
+                value={(draft as any)?.powerline_filter_hz === null ? 'off' : (draft as any)?.powerline_filter_hz ?? ''}
+                onChange={(e) => handleConfigChange('powerline_filter_hz', e.target.value === 'off' ? null : parseInt(e.target.value, 10))}
+                className="w-full p-2 rounded bg-gray-700 border border-gray-600"
+                disabled={!draft || isRecording || pending}
+              >
+                <option value="off">Off</option>
+                <option value="50">50 Hz</option>
+                <option value="60">60 Hz</option>
+              </select>
             </div>
 
 
@@ -585,15 +495,9 @@ export default function EegMonitorWebGL() {
 
             {/* Update Button */}
             <button
-              onClick={handleUpdateConfig}
-              className="btn-elata-primary w-full py-3 font-semibold"
-              disabled={!config}
-              style={{
-                fontFamily: 'var(--font-family-ui)',
-                opacity: !config ? 0.5 : 1,
-                cursor: !config ? 'not-allowed' : 'pointer',
-                transform: !config ? 'none' : undefined
-              }}
+              onClick={applyConfig}
+              className="w-full px-4 py-2 rounded-md bg-green-600 hover:bg-green-700 text-white font-bold disabled:bg-gray-500"
+              disabled={!draft || isRecording || pending}
             >
               Apply Configuration
             </button>

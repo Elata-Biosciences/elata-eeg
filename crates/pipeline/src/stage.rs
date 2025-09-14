@@ -1,13 +1,15 @@
 //! Core definitions for pipeline stages.
 
 use crate::allocator::SharedPacketAllocator;
+use crate::config::SystemConfig;
 use crate::control::{ControlCommand, PipelineEvent};
 use crate::data::RtPacket;
 use crate::error::StageError;
 use eeg_types::comms::BrokerMessage;
 use flume::Sender;
 use sensors::types::AdcDriver;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 /// The possible states of a stage in the pipeline.
@@ -63,9 +65,10 @@ pub struct StageContext {
 pub struct StageInitCtx<'a> {
     pub event_tx: &'a Sender<PipelineEvent>,
     pub allocator: &'a SharedPacketAllocator,
-    pub driver: &'a Option<Arc<Mutex<Box<dyn AdcDriver + Send>>>>,
+    pub driver: &'a Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>>,
     pub sample_rate: f64,
     pub websocket_sender: Option<broadcast::Sender<Arc<BrokerMessage>>>,
+    pub system_config: &'a SystemConfig,
 }
 
 impl StageContext {
