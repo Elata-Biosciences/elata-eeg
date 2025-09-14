@@ -1,0 +1,74 @@
+[2m2025-09-14T23:28:11.639925Z[0m [32m INFO[0m [2meeg_daemon[0m[2m:[0m EEG Daemon starting...
+[2m2025-09-14T23:28:11.641078Z[0m [32m INFO[0m [2meeg_daemon[0m[2m:[0m Loaded initial config: SystemConfig { version: "1.0", metadata: {"version": String("1.1.0"), "description": String("A pipeline to acquire data from an EEG board, convert it to voltage, and save it to a CSV file."), "name": String("E2E Test Pipeline")}, stages: [StageConfig { name: "eeg_source", stage_type: "eeg_source", params: {"driver": Object {"chips": Array [Object {"channels": Array [Number(0), Number(1), Number(2), Number(3), Number(4), Number(5), Number(6), Number(7)]}], "drdy_pin": Number(25), "gain": Number(24.0), "sample_rate": Number(250), "type": String("ElataV2"), "vref": Number(4.5)}, "batch_size": Number(32)}, inputs: [], outputs: ["raw_data"], channel_capacity: None }, StageConfig { name: "to_voltage", stage_type: "to_voltage", params: {}, inputs: ["eeg_source.raw_data"], outputs: ["voltage_data"], channel_capacity: None }, StageConfig { name: "filter", stage_type: "gui_filter", params: {"output": String("filtered_data"), "low_pass": Number(40.0), "notch": Number(60.0), "high_pass": Number(16)}, inputs: ["to_voltage.voltage_data"], outputs: ["filtered_data"], channel_capacity: None }, StageConfig { name: "csv_sink", stage_type: "csv_sink", params: {"max_recording_length_minutes": Number(60), "path": String("e2e_test_output.csv")}, inputs: ["to_voltage.voltage_data"], outputs: [], channel_capacity: None }, StageConfig { name: "websocket_sink", stage_type: "websocket_sink", params: {"topic": String("eeg_voltage")}, inputs: ["filter.filtered_data"], outputs: [], channel_capacity: None }] }
+[2m2025-09-14T23:28:11.641298Z[0m [32m INFO[0m [2meeg_daemon[0m[2m:[0m Using ElataV2 hardware driver
+[2m2025-09-14T23:28:11.641591Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m GPIO initialized.
+[2m2025-09-14T23:28:11.641645Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m SPI bus initialized.
+[2m2025-09-14T23:28:11.641663Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m CS pin 8 initialized for software control.
+[2m2025-09-14T23:28:11.641676Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Ads1299Driver created for CS pin 0
+[2m2025-09-14T23:28:11.641700Z[0m [32m INFO[0m [2meeg_daemon[0m[2m:[0m Building pipeline graph...
+[2m2025-09-14T23:28:11.641849Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m Initializing ElataV2 board with 1 chips...
+[2m2025-09-14T23:28:11.641870Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m Initializing Chip 0...
+[2m2025-09-14T23:28:11.722287Z[0m [34mDEBUG[0m [2msensors::ads1299::driver[0m[2m:[0m Read device ID (attempt 1): 0x3E
+[2m2025-09-14T23:28:11.733275Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x00: 0x3E
+[2m2025-09-14T23:28:11.733363Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x01: 0xD6
+[2m2025-09-14T23:28:11.733427Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x02: 0xC0
+[2m2025-09-14T23:28:11.733490Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x03: 0xEC
+[2m2025-09-14T23:28:11.733552Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x04: 0x00
+[2m2025-09-14T23:28:11.733614Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x05: 0x60
+[2m2025-09-14T23:28:11.733674Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x06: 0x60
+[2m2025-09-14T23:28:11.733735Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x07: 0x60
+[2m2025-09-14T23:28:11.733795Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x08: 0x60
+[2m2025-09-14T23:28:11.733855Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x09: 0x60
+[2m2025-09-14T23:28:11.733916Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x0A: 0x60
+[2m2025-09-14T23:28:11.733976Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x0B: 0x60
+[2m2025-09-14T23:28:11.734036Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x0C: 0x60
+[2m2025-09-14T23:28:11.734096Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x0D: 0xFF
+[2m2025-09-14T23:28:11.734157Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x0E: 0xFF
+[2m2025-09-14T23:28:11.734218Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x0F: 0x00
+[2m2025-09-14T23:28:11.734279Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x10: 0x00
+[2m2025-09-14T23:28:11.734339Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x11: 0x00
+[2m2025-09-14T23:28:11.734399Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x12: 0x00
+[2m2025-09-14T23:28:11.734459Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x13: 0x00
+[2m2025-09-14T23:28:11.734518Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x14: 0x0F
+[2m2025-09-14T23:28:11.734578Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x15: 0x20
+[2m2025-09-14T23:28:11.734638Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x16: 0x00
+[2m2025-09-14T23:28:11.734698Z[0m [32m INFO[0m [2msensors::ads1299::driver[0m[2m:[0m Reg 0x17: 0x00
+[2m2025-09-14T23:28:11.734957Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m Chip 0 initialized and ready with 8 active channel(s).
+[2m2025-09-14T23:28:11.745067Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m DRDY pin 25 initial state: HIGH (should be HIGH before data acquisition starts)
+[2m2025-09-14T23:28:11.745202Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m Asynchronous DRDY interrupt handler registered on pin 25
+[2m2025-09-14T23:28:11.745342Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m Acquisition thread started with high priority.
+[2m2025-09-14T23:28:11.757563Z[0m [32m INFO[0m [2mboards::elata_v2::driver[0m[2m:[0m ElataV2 board initialized successfully and is acquiring data.
+[2m2025-09-14T23:28:11.757605Z[0m [32m INFO[0m [2mpipeline::stages::eeg_source[0m[2m:[0m Driver configured with 8 total channels
+[2m2025-09-14T23:28:11.757816Z[0m [32m INFO[0m [2meeg_daemon[0m[2m:[0m Pipeline graph built.
+[2m2025-09-14T23:28:11.757953Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Wired output 'eeg_source.raw_data' to input 'in' on stage 'to_voltage'
+[2m2025-09-14T23:28:11.757973Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Wired output 'to_voltage.voltage_data' to input 'in' on stage 'filter'
+[2m2025-09-14T23:28:11.757987Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Wired output 'to_voltage.voltage_data' to input 'in' on stage 'csv_sink'
+[2m2025-09-14T23:28:11.758002Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Wired output 'filter.filtered_data' to input 'in' on stage 'websocket_sink'
+[2m2025-09-14T23:28:11.758198Z[0m [34mDEBUG[0m [2mpipeline::executor[0m[2m:[0m Set affinity for stage 'to_voltage' to core CoreId { id: 0 }
+[2m2025-09-14T23:28:11.758232Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Stage thread 'to_voltage' started.
+[2m2025-09-14T23:28:11.758218Z[0m [34mDEBUG[0m [2mpipeline::executor[0m[2m:[0m Set affinity for stage 'eeg_source' to core CoreId { id: 1 }
+[2m2025-09-14T23:28:11.758258Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Stage thread 'eeg_source' started.
+[2m2025-09-14T23:28:11.758330Z[0m [34mDEBUG[0m [2mpipeline::executor[0m[2m:[0m Set affinity for stage 'csv_sink' to core CoreId { id: 3 }
+[2m2025-09-14T23:28:11.758350Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Stage thread 'csv_sink' started.
+[2m2025-09-14T23:28:11.758349Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Starting post-wiring validation...
+[2m2025-09-14T23:28:11.758376Z[0m [34mDEBUG[0m [2mpipeline::executor[0m[2m:[0m Set affinity for stage 'websocket_sink' to core CoreId { id: 0 }
+[2m2025-09-14T23:28:11.758392Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Stage thread 'websocket_sink' started.
+[2m2025-09-14T23:28:11.758400Z[0m [33m WARN[0m [2mpipeline::executor[0m[2m:[0m Output Validation: Default output port 'csv_sink.out' is not connected to any input.
+[2m2025-09-14T23:28:11.758418Z[0m [33m WARN[0m [2mpipeline::executor[0m[2m:[0m Output Validation: Default output port 'websocket_sink.out' is not connected to any input.
+[2m2025-09-14T23:28:11.758434Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Post-wiring validation complete.
+[2m2025-09-14T23:28:11.758462Z[0m [32m INFO[0m [2meeg_daemon[0m[2m:[0m Default pipeline executor started.
+[2m2025-09-14T23:28:11.758605Z[0m [34mDEBUG[0m [2meeg_daemon[0m[2m:[0m Caching SourceReady event metadata
+[2m2025-09-14T23:28:11.758714Z[0m [34mDEBUG[0m [2meeg_daemon[0m[2m:[0m No active SSE subscribers to send event to.
+[2m2025-09-14T23:28:11.758742Z[0m [34mDEBUG[0m [2mpipeline::executor[0m[2m:[0m Set affinity for stage 'filter' to core CoreId { id: 2 }
+[2m2025-09-14T23:28:11.758761Z[0m [32m INFO[0m [2mpipeline::executor[0m[2m:[0m Stage thread 'filter' started.
+[2m2025-09-14T23:28:11.759184Z[0m [32m INFO[0m [2madc_daemon::server[0m[2m:[0m listening on 0.0.0.0:9000
+[2m2025-09-14T23:28:46.392457Z[0m [32m INFO[0m [2madc_daemon::config[0m[2m:[0m No initial config available for new client. It will receive the next update.
+[2m2025-09-14T23:28:46.500129Z[0m [32m INFO[0m [2madc_daemon::websocket_broker[0m[2m:[0m [Client 3cefa429-8447-454c-af91-36debfc8463f] New WebSocket connection established.
+[2m2025-09-14T23:28:46.508284Z[0m [32m INFO[0m [2madc_daemon::api[0m[2m:[0m Fetching current state
+[2m2025-09-14T23:28:46.557692Z[0m [32m INFO[0m [2madc_daemon::websocket_broker[0m[2m:[0m [Client 3cefa429-8447-454c-af91-36debfc8463f] Subscribing to topic: eeg_voltage
+[2m2025-09-14T23:28:46.557970Z[0m [32m INFO[0m [2madc_daemon::websocket_broker[0m[2m:[0m [Client 3cefa429-8447-454c-af91-36debfc8463f] Subscribing to topic: brain_waves_fft
+[2m2025-09-14T23:32:11.229452Z[0m [32m INFO[0m [2madc_daemon::config[0m[2m:[0m No initial config available for new client. It will receive the next update.
+[2m2025-09-14T23:32:11.454167Z[0m [32m INFO[0m [2madc_daemon::websocket_broker[0m[2m:[0m [Client 26191531-f12e-4b1a-8e48-5743b3916d97] New WebSocket connection established.
+[2m2025-09-14T23:32:11.477580Z[0m [32m INFO[0m [2madc_daemon::api[0m[2m:[0m Fetching current state
+[2m2025-09-14T23:32:11.490161Z[0m [32m INFO[0m [2madc_daemon::websocket_broker[0m[2m:[0m [Client 26191531-f12e-4b1a-8e48-5743b3916d97] Subscribing to topic: eeg_voltage
+[2m2025-09-14T23:32:11.491201Z[0m [32m INFO[0m [2madc_daemon::websocket_broker[0m[2m:[0m [Client 26191531-f12e-4b1a-8e48-5743b3916d97] Subscribing to topic: brain_waves_fft

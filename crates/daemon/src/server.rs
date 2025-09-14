@@ -8,6 +8,7 @@ use axum::{
 use http::StatusCode;
 use log::error;
 use std::{any::Any, net::SocketAddr};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{Any as CorsAny, CorsLayer};
 
 fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response<Body> {
@@ -20,10 +21,6 @@ fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response<Body> {
     };
 
     error!("PANIC CAUGHT: {}", details);
-
-    // Optionally, you can also try to get a backtrace if RUST_BACKTRACE is set
-    // This requires the backtrace crate and might be more involved.
-    // For now, just logging the message is a huge step forward.
 
     Response::builder()
         .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -46,13 +43,13 @@ pub async fn run(
     let app = api::create_router()
         .route("/ws/data", get(websocket_handler))
         .with_state(state)
+        .layer(CatchPanicLayer::custom(handle_panic))
         .layer(
             CorsLayer::new()
                 .allow_origin(CorsAny)
                 .allow_methods(CorsAny)
                 .allow_headers(CorsAny),
-        )
-;
+        );
 
     // run it
     let addr = SocketAddr::from(([0, 0, 0, 0], 9000));

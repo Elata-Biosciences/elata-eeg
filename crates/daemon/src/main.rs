@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
+    env,
     fs,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use backtrace::Backtrace;
@@ -26,6 +28,35 @@ use pipeline::graph::PipelineGraph;
 use pipeline::registry::StageRegistry;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+fn resolve_config_path(input: &str) -> Result<PathBuf, DriverError> {
+    // 1) As provided (absolute or relative to CWD)
+    let p1 = PathBuf::from(input);
+    if p1.exists() {
+        return Ok(p1);
+    }
+    // 2) Relative to the binary directory
+    if let Ok(exe) = env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            let p2 = bin_dir.join(input);
+            if p2.exists() {
+                return Ok(p2);
+            }
+        }
+    }
+    // 3) Relative to the workspace root (two levels up from crate dir)
+    let ws_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent());
+    if let Some(root) = ws_root {
+        let p3 = root.join(input);
+        if p3.exists() {
+            return Ok(p3);
+        }
+    }
+    Err(DriverError::IoError(format!(
+        "Config file not found. Tried: '{0}', '<bin_dir>/{0}', '<workspace_root>/{0}'",
+        input
+    )))
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), DriverError> {
@@ -49,6 +80,14 @@ async fn main() -> Result<(), DriverError> {
                 .action(clap::ArgAction::SetTrue)
                 .help("Use mock EEG data instead of real hardware"),
         )
+        .arg(
+            Arg::new("config")
+                .long("config")
+                .short('c')
+                .num_args(1)
+                .value_name("FILE")
+                .help("Path to pipeline config YAML (default: pipelines/default.yaml)"),
+        )
         .get_matches();
 
     // --- Centralized State ---
@@ -60,9 +99,16 @@ async fn main() -> Result<(), DriverError> {
     let _supervisor = PluginSupervisor::new();
 
     // --- Default Pipeline Startup ---
-    let config_path = "pipelines/default.yaml";
-    let config_str = fs::read_to_string(config_path).map_err(|e| DriverError::IoError(e.to_string()))?;
-    let initial_config: SystemConfig = serde_yaml::from_str(&config_str).map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
+    let config_input = matches
+        .get_one::<String>("config")
+        .map(|s| s.as_str())
+        .unwrap_or("pipelines/default.yaml");
+    let resolved_config_path = resolve_config_path(config_input)?;
+    tracing::info!("Loading config from: {}", resolved_config_path.display());
+    let config_str = fs::read_to_string(&resolved_config_path)
+        .map_err(|e| DriverError::IoError(e.to_string()))?;
+    let initial_config: SystemConfig = serde_yaml::from_str(&config_str)
+        .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
     tracing::info!("Loaded initial config: {:?}", initial_config);
 
     let mut registry = StageRegistry::new();
