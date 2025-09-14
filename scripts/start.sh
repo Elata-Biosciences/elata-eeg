@@ -4,6 +4,15 @@
 ENABLE_SLEEP=true; SLEEP_TIME=0.5; mysleep() { $ENABLE_SLEEP && sleep "${1:-$SLEEP_TIME}"; }
 set -euo pipefail
 
+# Parse flags (default to development mode; use --prod for production)
+PROD=0
+for arg in "$@"; do
+  if [ "$arg" = "--prod" ] || [ "$arg" = "-p" ]; then
+    PROD=1
+  fi
+done
+
+
 # Resolve current user home and sudo
 USER_HOME="${HOME:-/home/$USER}"
 SUDO="$(command -v sudo || true)"
@@ -56,8 +65,8 @@ else
       nohup "$REPO_ROOT/target/debug/eeg_daemon" > /tmp/eeg_daemon.log 2>&1 &
       DAEMON_PID=$!
     elif bin_exists cargo; then
-      echo "▶️ Building and starting daemon via cargo (mock mode)"
-      (cd "$REPO_ROOT" && nohup cargo run --bin eeg_daemon -- --mock > /tmp/eeg_daemon.log 2>&1 & echo $! > /tmp/eeg_daemon.pid)
+      echo "▶️ Building and starting daemon via cargo (dev)"
+      (cd "$REPO_ROOT" && nohup cargo run --bin eeg_daemon > /tmp/eeg_daemon.log 2>&1 & echo $! > /tmp/eeg_daemon.pid)
       DAEMON_PID=$(cat /tmp/eeg_daemon.pid 2>/dev/null || true)
     else
       echo "❌ Could not find eeg_daemon binary and cargo is not installed."
@@ -90,13 +99,18 @@ else
       echo "📦 Installing kiosk dependencies (node_modules missing)..."
       (cd "$KIOSK_DIR" && (npm ci || npm install))
     fi
-    echo "⚙️ Building kiosk (production)..."
-    if ! (cd "$KIOSK_DIR" && npm run build); then
-      echo "❌ Kiosk build failed. Aborting."
-      exit 1
+    if [ "$PROD" -eq 1 ]; then
+      echo "⚙️ Building kiosk (production)..."
+      if ! (cd "$KIOSK_DIR" && npm run build); then
+        echo "❌ Kiosk build failed. Aborting."
+        exit 1
+      fi
+      echo "▶️ Starting kiosk (next start) in background..."
+      (cd "$KIOSK_DIR" && nohup npm start > /tmp/kiosk.log 2>&1 & echo $! > /tmp/kiosk.pid)
+    else
+      echo "⚙️ Starting kiosk (development) with Next.js dev server..."
+      (cd "$KIOSK_DIR" && nohup npm run dev > /tmp/kiosk.log 2>&1 & echo $! > /tmp/kiosk.pid)
     fi
-    echo "▶️ Starting kiosk (next start) in background..."
-    (cd "$KIOSK_DIR" && nohup npm start > /tmp/kiosk.log 2>&1 & echo $! > /tmp/kiosk.pid)
     KIOSK_PID=$(cat /tmp/kiosk.pid 2>/dev/null || true)
     echo "ℹ️ kiosk PID: ${KIOSK_PID:-unknown} (logs: /tmp/kiosk.log)"
   fi

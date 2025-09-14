@@ -267,27 +267,27 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   // Effect to determine when the system is truly ready
   useEffect(() => {
     console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'config channels:', config?.channels?.length);
-    // Ready when pipeline is started and the final config with channel names is available
-    if (pipelineStatus === 'started' && config && config.channels && config.channels.length > 0) {
-      setIsReady(true);
+    // In development, always attempt to connect so /debug works even if pipeline state is unclear
+    const shouldConnectNow = pipelineStatus === 'started' || process.env.NODE_ENV === 'development';
+    if (shouldConnectNow) {
       setShouldConnect(true);
-
-      if (!(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
-        if (process.env.NODE_ENV === 'development') {
-          (window as any)[systemReadyGuardKey] = true;
+      // Only mark ready when we actually have channel metadata
+      if (config && config.channels && config.channels.length > 0) {
+        setIsReady(true);
+        if (!(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
+          if (process.env.NODE_ENV === 'development') {
+            (window as any)[systemReadyGuardKey] = true;
+          }
+          console.log('[EegDataContext] System is ready. Final configuration has been received.');
         }
-        console.log('[EegDataContext] System is ready. Final configuration has been received.');
+      } else {
+        setIsReady(false);
       }
     } else {
-      // Only reset isReady and shouldConnect if we're not in a reconnection state
-      // During reconnection, we want to maintain the previous configuration
+      // Only reset isReady if we're not in a reconnection state
       if (!isReconnecting) {
         setIsReady(false);
-        // Do not set shouldConnect to false here.
-        // We want to keep the WebSocket connection alive during a pipeline restart
-        // to avoid a "Disconnected" state on the frontend. The connection
-        // will be reused when the new `SourceReady` event arrives.
-        // Reset the guard when system is not ready
+        // Do not set shouldConnect to false here (keep connection alive during restarts)
         if (process.env.NODE_ENV === 'development') {
           // @ts-ignore - Adding custom property to window object
           window[systemReadyGuardKey] = false;
@@ -365,27 +365,15 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
       console.log('[EegDataContext] WebSocket connection established');
       setWsStatus('Connected');
 
-      // Subscribe to both EEG voltage and FFT topics if meta_rev available
-      if (config && (config as any).meta_rev) {
-        const epoch = (config as any).meta_rev;
-        const eegSubscription = {
-          type: 'subscribe',
-          topic: 'eeg_voltage',
-          epoch,
-        };
-        socket.send(JSON.stringify(eegSubscription));
-        console.log(`[EegDataContext] Subscribed to eeg_voltage with epoch ${epoch}`);
+      // Subscribe to both EEG voltage and FFT topics; fall back to epoch 1 if meta_rev not yet available
+      const epoch = (config as any)?.meta_rev ?? 1;
+      const eegSubscription = { type: 'subscribe', topic: 'eeg_voltage', epoch };
+      socket.send(JSON.stringify(eegSubscription));
+      console.log(`[EegDataContext] Subscribed to eeg_voltage with epoch ${epoch}`);
 
-        const fftSubscription = {
-          type: 'subscribe',
-          topic: 'brain_waves_fft',
-          epoch,
-        };
-        socket.send(JSON.stringify(fftSubscription));
-        console.log(`[EegDataContext] Subscribed to brain_waves_fft with epoch ${epoch}`);
-      } else {
-        console.warn('[EegDataContext] Could not subscribe to data topics: config or meta_rev is not available.');
-      }
+      const fftSubscription = { type: 'subscribe', topic: 'brain_waves_fft', epoch };
+      socket.send(JSON.stringify(fftSubscription));
+      console.log(`[EegDataContext] Subscribed to brain_waves_fft with epoch ${epoch}`);
     };
 
     // Define the message handler inside the effect to create a stable closure
@@ -423,21 +411,68 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
       // Handle Data Packet (Binary)
       if (event.data instanceof ArrayBuffer) {
         const dataView = new DataView(event.data);
-        
+
         // 1. Read JSON header length
         const jsonLen = dataView.getUint32(0, false); // Big-endian is correct
-        
+
         // 2. Decode JSON header
         const jsonBytes = new Uint8Array(event.data, 4, jsonLen);
         const jsonString = new TextDecoder().decode(jsonBytes);
         const header = JSON.parse(jsonString) as DataPacketHeader;
 
+        // Optional debug logging of headers (throttled)
+        try {
+          // @ts-ignore
+          const wantDebug = (window && (window as any).__eeg_debug_headers) ? true : false;
+          if (wantDebug) {
+            // @ts-ignore
+            const lastLog = (window as any).__eeg_last_header_log_ts || 0;
+            const now = Date.now();
+            if (now - lastLog > 1000) {
+              console.log('[EegDataContext][Header]', {
+                topic: header.topic,
+                packet_type: header.packet_type,
+                meta_rev: header.meta_rev,
+                batch_size: header.batch_size,
+                num_channels: (header as any).num_channels,
+              });
+              // @ts-ignore
+              (window as any).__eeg_last_header_log_ts = now;
+            }
+          }
+        } catch {}
+
         // 3. Look up the full metadata using meta_rev
-        const topicMeta = metadata[header.topic];
+        let topicMeta = metadata[header.topic];
         if (!topicMeta || topicMeta.meta_rev !== header.meta_rev) {
-          // Silently drop the packet if metadata is not found or mismatched.
-          // This handles race conditions during configuration changes.
-          return;
+          // Fallback: synthesize minimal metadata so we can still render/debug quickly
+          // Check UI override first
+          // @ts-ignore
+          const override = (window && (window as any).__eeg_assumed_channels) || null;
+          const defaultChannels = override
+            ?? (configRef.current as any)?.channels?.length
+            ?? (header.topic === 'eeg_voltage' ? 8 : 1);
+          const numChannels = (header as any).num_channels && (header as any).num_channels > 0
+            ? (header as any).num_channels
+            : defaultChannels;
+          const channel_names = Array.from({ length: numChannels }, (_, i) => `Ch${i + 1}`);
+          topicMeta = {
+            sensor_id: 0,
+            meta_rev: header.meta_rev,
+            schema_ver: 1,
+            source_type: header.topic,
+            v_ref: 0,
+            adc_bits: 0,
+            gain: 1,
+            sample_rate: 0,
+            offset_code: 0,
+            is_twos_complement: true,
+            channel_names,
+            batch_size: header.batch_size ?? 0,
+            data_type: header.packet_type === 'RawI32' ? 'i32' : 'f32',
+          } as SensorMeta;
+          setMetadata(prev => ({ ...prev, [header.topic]: topicMeta! }));
+          console.warn('[EegDataContext] Synthesized metadata for topic', header.topic, 'rev', header.meta_rev, 'num_channels=', numChannels);
         }
 
         // 4. Calculate sample data offset (4 bytes for length prefix)
@@ -445,16 +480,16 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
 
         // 5. Process the samples based on the explicit packet_type
         const samplesBuffer = event.data.slice(samplesOffset);
-         const samples =
-           header.packet_type === 'RawI32'
+        const samples =
+          header.packet_type === 'RawI32'
             ? new Int32Array(samplesBuffer)
             : new Float32Array(samplesBuffer);
-        
+
         // Now you have the full context: `header` and `topicMeta` to process the `samples`
         const newChunk: SampleChunk = {
-            meta: topicMeta,
-            samples: samples,
-            timestamp: header.ts_ns,
+          meta: topicMeta,
+          samples: samples,
+          timestamp: header.ts_ns,
         };
         handleSamplesRef.current(newChunk);
       }
