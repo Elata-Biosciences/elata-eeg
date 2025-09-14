@@ -1,4 +1,8 @@
 #!/bin/bash
 
 SCRIPT_DIR=scripts
-$SCRIPT_DIR/$1.sh
+
+while [ $# -gt 0 ]; do
+  $SCRIPT_DIR/$1.sh
+  shift
+done

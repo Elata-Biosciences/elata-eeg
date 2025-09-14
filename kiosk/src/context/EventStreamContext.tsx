@@ -146,8 +146,7 @@ class EventStreamManager {
     }
 
     console.log('[EventStream] Connecting to SSE endpoint...');
-    const daemonUrl = process.env.NEXT_PUBLIC_DAEMON_URL || 'http://localhost:9000';
-    this.eventSource = new EventSource(`${daemonUrl}/api/events`);
+    this.eventSource = new EventSource('http://127.0.0.1:9000/api/events');
 
     this.eventSource.onopen = () => {
       console.log('[EventStream] SSE connection established.');

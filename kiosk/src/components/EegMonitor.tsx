@@ -25,7 +25,7 @@ export default function EegMonitorWebGL() {
   const showSignalButtonRef = useRef<HTMLButtonElement>(null); // Ref for show signal button
 
   // Get all data and config from the new central context
-  const { authoritative: config, draft, setDraft, applyConfig, pending, error } = useEegConfig();
+  const { authoritative: config, draft, updateDraft, applyConfig, pending, error } = useEegConfig();
   const { dataStatus } = useEegStatus();
   const { dataReceived, driverError, wsStatus } = dataStatus;
   const { fatalError } = useEventStreamData();
@@ -51,7 +51,7 @@ export default function EegMonitorWebGL() {
 
   const handleConfigChange = (field: string, value: any) => {
     if (draft) {
-      setDraft({ ...draft, [field]: value });
+      updateDraft({ [field]: value } as any);
     }
   };
  
@@ -495,7 +495,7 @@ export default function EegMonitorWebGL() {
 
             {/* Update Button */}
             <button
-              onClick={applyConfig}
+              onClick={() => { if (draft) applyConfig(draft as any); }}
               className="w-full px-4 py-2 rounded-md bg-green-600 hover:bg-green-700 text-white font-bold disabled:bg-gray-500"
               disabled={!draft || isRecording || pending}
             >

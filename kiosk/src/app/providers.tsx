@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, ReactNode } from 'react';
+import React, { useEffect, ReactNode, useState } from 'react';
 import { EventStreamProvider } from "../context/EventStreamContext";
 import { PipelineProvider, usePipeline } from "../context/PipelineContext";
 import { EegDataProvider } from "../context/EegDataContext";
@@ -39,5 +39,16 @@ const ComposedProviders = ({ children }: { children: ReactNode }) => {
 };
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
+  if (!isClient) {
+    // Return children without providers during SSR
+    return <>{children}</>;
+  }
+
   return <ComposedProviders>{children}</ComposedProviders>;
 }

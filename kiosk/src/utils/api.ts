@@ -6,10 +6,7 @@
  */
 export const getPipelines = async () => {
   try {
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-    const base = `${protocol}://${host}:9000`;
-    const response = await fetch(`${base}/api/pipelines`);
+    const response = await fetch('http://127.0.0.1:9000/api/pipelines');
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -27,10 +24,7 @@ export const getPipelines = async () => {
  */
 export const startPipeline = async (id: string) => {
   try {
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-    const base = `${protocol}://${host}:9000`;
-    const response = await fetch(`${base}/api/pipelines/${id}/start`, {
+    const response = await fetch(`http://127.0.0.1:9000/api/pipelines/${id}/start`, {
       method: 'POST',
     });
     if (!response.ok) {
@@ -49,10 +43,7 @@ export const startPipeline = async (id: string) => {
  */
 export const getPipelineState = async () => {
   try {
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-    const base = `${protocol}://${host}:9000`;
-    const response = await fetch(`${base}/api/state`);
+    const response = await fetch('http://127.0.0.1:9000/api/state');
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -69,10 +60,7 @@ export const getPipelineState = async () => {
  */
 export const stopPipeline = async () => {
   try {
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-    const base = `${protocol}://${host}:9000`;
-    const response = await fetch(`${base}/api/pipelines/stop`, {
+    const response = await fetch('http://127.0.0.1:9000/api/pipelines/stop', {
       method: 'POST',
     });
     if (!response.ok) {
@@ -100,16 +88,12 @@ export const stopPipeline = async () => {
  */
 export const sendCommand = async (pipelineId: string, command: string, params: any) => {
   try {
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https' : 'http';
-    const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-    const base = `${protocol}://${host}:9000`;
-
     // Send control commands through the pipeline control endpoint
     // For unit variants like StartRecording/StopRecording, send the JSON payload as a string (serde unit variant)
     const isUnitVariant = command === 'StartRecording' || command === 'StopRecording' || command === 'Start' || command === 'Pause' || command === 'Resume' || command === 'Shutdown' || command === 'Drain';
     const body = isUnitVariant ? JSON.stringify(command) : JSON.stringify({ [command]: params });
 
-    const response = await fetch(`${base}/api/pipelines/${pipelineId}/control`, {
+    const response = await fetch(`http://127.0.0.1:9000/api/pipelines/${pipelineId}/control`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -125,6 +109,18 @@ export const sendCommand = async (pipelineId: string, command: string, params: a
     throw error;
   }
 };
+
+/**
+ * Runs hardware diagnostics on the backend and returns a report.
+ */
+export const runDiagnostics = async () => {
+  const res = await fetch('http://127.0.0.1:9000/api/diagnostics');
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return await res.json();
+};
+
 // WebSocket for configuration management with automatic reconnection
 class ResilientWebSocket {
   private ws: WebSocket | null = null;
@@ -205,10 +201,8 @@ class ResilientWebSocket {
 let configWebSocketInstance: ResilientWebSocket;
 
 if (typeof window !== 'undefined') {
-  // Use NEXT_PUBLIC_DAEMON_URL as the single source of truth for the daemon's location.
-  // Default to localhost for local development.
-  const daemonUrl = process.env.NEXT_PUBLIC_DAEMON_URL || 'http://localhost:9000';
-  const wsUrl = daemonUrl.replace(/^http/, 'ws') + '/ws/config';
+  // Connect directly to the backend WebSocket
+  const wsUrl = 'ws://127.0.0.1:9000/ws/config';
   configWebSocketInstance = new ResilientWebSocket(wsUrl);
 }
 

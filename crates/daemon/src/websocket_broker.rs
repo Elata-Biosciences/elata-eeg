@@ -141,8 +141,16 @@ impl WebSocketBroker {
                                             topic: topic.clone(),
                                             meta_rev: topic_state.last_meta.as_ref().map(|_| topic_state.meta_rev as u64),
                                         });
-                                        if ws_tx.lock().await.send(Message::Text(serde_json::to_string(&ack).unwrap())).await.is_err() {
-                                            break; // Client disconnected
+                                        match serde_json::to_string(&ack) {
+                                            Ok(ack_json) => {
+                                                if ws_tx.lock().await.send(Message::Text(ack_json)).await.is_err() {
+                                                    break; // Client disconnected
+                                                }
+                                            },
+                                            Err(e) => {
+                                                tracing::error!("Failed to serialize subscription ACK: {}", e);
+                                                break;
+                                            }
                                         }
                                         if let Some(meta_msg) = &topic_state.last_meta {
                                             if let BrokerMessage::Data { payload: BrokerPayload::Meta { json, .. }, .. } = &**meta_msg {

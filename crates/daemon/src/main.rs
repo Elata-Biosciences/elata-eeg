@@ -260,11 +260,27 @@ async fn main() -> Result<(), DriverError> {
     drop(app_state);
 
     // Wait for the server to shut down
-    server_handle.await.unwrap().unwrap();
+    match server_handle.await {
+        Ok(Ok(_)) => {
+            tracing::info!("Server shut down successfully");
+        },
+        Ok(Err(e)) => {
+            tracing::error!("Server error: {}", e);
+            return Err(DriverError::Other(format!("Server error: {}", e)));
+        },
+        Err(e) => {
+            tracing::error!("Server task panicked: {:?}", e);
+            return Err(DriverError::Other(format!("Server task failed: {:?}", e)));
+        }
+    }
 
     // Wait for the background tasks to complete.
-    event_forwarding_handle.await.unwrap();
-    fatal_error_handle.await.unwrap();
+    if let Err(e) = event_forwarding_handle.await {
+        tracing::error!("Event forwarding task panicked: {:?}", e);
+    }
+    if let Err(e) = fatal_error_handle.await {
+        tracing::error!("Fatal error task panicked: {:?}", e);
+    }
 
     tracing::info!("EEG Daemon stopped gracefully.");
 

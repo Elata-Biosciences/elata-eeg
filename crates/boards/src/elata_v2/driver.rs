@@ -29,6 +29,7 @@ pub struct ElataV2Driver {
     sample_rx: Receiver<Vec<i32>>,
     acq_thread_handle: Option<JoinHandle<()>>,
     stop_acq_thread: Arc<AtomicBool>,
+    drdy_tx: Option<flume::Sender<()>>, // Keep DRDY channel alive
 }
 impl ElataV2Driver {
     pub fn new(config: AdcConfig, board_config: ElataV2BoardConfig) -> Result<Self, DriverError> {
@@ -66,6 +67,7 @@ impl ElataV2Driver {
             sample_rx,
             acq_thread_handle: None,
             stop_acq_thread: Arc::new(AtomicBool::new(false)),
+            drdy_tx: None, // Initialize as None
         })
     }
     
@@ -145,6 +147,7 @@ impl AdcDriver for ElataV2Driver {
             self.config.drdy_pin,
             if initial_state { "HIGH" } else { "LOW" }
         );
+        
         let drdy_tx_clone = drdy_tx.clone();
         drdy_pin.set_async_interrupt(Trigger::FallingEdge, None, move |_| {
             let _ = drdy_tx_clone.send(());
@@ -154,6 +157,9 @@ impl AdcDriver for ElataV2Driver {
             self.config.drdy_pin
         );
         *self.drdy_pin.lock().unwrap() = Some(drdy_pin);
+        
+        // Store the drdy_tx to keep the channel alive
+        self.drdy_tx = Some(drdy_tx);
         // 3. Spawn the acquisition thread
         let stop_flag = self.stop_acq_thread.clone();
         let (sample_tx, sample_rx) = flume::bounded(4096); // This is the new channel for samples
@@ -332,9 +338,14 @@ impl AdcDriver for ElataV2Driver {
     }
     fn shutdown(&mut self) -> Result<(), DriverError> {
         info!("Shutting down ElataV2 board...");
+        
         // 1. Signal the acquisition thread to stop
         self.stop_acq_thread.store(true, Ordering::Relaxed);
-        // 2. Wait for the acquisition thread to finish
+        
+        // 2. Drop the DRDY channel to disconnect it cleanly
+        self.drdy_tx = None;
+        
+        // 3. Wait for the acquisition thread to finish
         if let Some(handle) = self.acq_thread_handle.take() {
             info!("Waiting for acquisition thread to join...");
             if let Err(e) = handle.join() {

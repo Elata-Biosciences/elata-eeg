@@ -14,7 +14,7 @@ stages:
         vref: 4.5
         gain: 24.0
         chips:
-          - channels: [0, 1, 2, 3, 4, 5, 6, 7]
+          - channels: [0, 1, 2, 3]  # Single chip with 4 channels
       batch_size: 32
     outputs: ["raw_data"]
 

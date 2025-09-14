@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useEegConfig } from './EegConfig';
+import { useEegConfig } from '@/hooks/useEegConfig';
 
 interface ChannelConfigProps {
   className?: string;
 }
 
 export default function EegChannelConfig({ className = '' }: ChannelConfigProps) {
-  const { config, status, updateConfig } = useEegConfig();
+  const { authoritative, draft, pending, error, applyConfig } = useEegConfig();
+  const config = draft ?? authoritative;
   const [selectedChannels, setSelectedChannels] = useState<number[]>([]);
   const [maxChannels, setMaxChannels] = useState<number>(8);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -21,10 +22,14 @@ export default function EegChannelConfig({ className = '' }: ChannelConfigProps)
 
   // Initialize selected channels from config
   useEffect(() => {
-    if (config && config.channels) {
-      setSelectedChannels(config.channels);
-      // Set max channels to at least the current number of channels
-      setMaxChannels(Math.max(8, Math.max(...config.channels) + 1));
+    if (config && (config as any).channels) {
+      const chans = (config as any).channels;
+      const count = Array.isArray(chans) ? chans.length : 0;
+      // Initialize as contiguous [0..count-1]
+      setSelectedChannels(Array.from({ length: count }, (_, i) => i));
+      // Default max channels from chips if available
+      const max = (config as any).chips?.length ? (config as any).chips.length * 8 : Math.max(8, count);
+      setMaxChannels(max);
     }
   }, [config]);
 
@@ -71,13 +76,20 @@ export default function EegChannelConfig({ className = '' }: ChannelConfigProps)
     // This simple panel applies a contiguous channel count matching the selection size.
     // Detailed per-index selection is not supported in this quick panel.
     const desiredCount = selectedChannels.length;
-    const current = config;
-    updateConfig({
-      channels: desiredCount,
-      sample_rate: current?.sample_rate ?? 250,
-      powerline_filter_hz: current?.powerline_filter_hz ?? null,
-      gain: (current as any)?.gain ?? 1,
-    });
+    const current: any = config;
+    const newChannels = Array.from({ length: desiredCount }, (_, i) => ({
+      channel_on: true,
+      channel_num: i,
+      gain: current?.channels?.[i]?.gain ?? 24,
+      input_type: current?.channels?.[i]?.input_type ?? 'Normal',
+      bias_sense: current?.channels?.[i]?.bias_sense ?? false,
+      pga_p: current?.channels?.[i]?.pga_p ?? 'x',
+      pga_n: current?.channels?.[i]?.pga_n ?? 'x',
+      srb2: current?.channels?.[i]?.srb2 ?? false,
+    }));
+
+    const newConfig = { ...current, channels: newChannels };
+    applyConfig(newConfig);
 
     // Since the update is now handled via the context, we can provide
     // optimistic feedback. The actual state will be updated via SSE.
@@ -170,10 +182,10 @@ export default function EegChannelConfig({ className = '' }: ChannelConfigProps)
       <div className="mt-4 p-3 bg-gray-800 rounded">
         <h3 className="font-semibold mb-2">Current Configuration:</h3>
         <div className="text-sm">
-          <div>Status: {status}</div>
-          {config && (
+          <div>Status: {pending ? 'Updating' : (error ? `Error: ${error}` : 'Ready')}</div>
+          {config && (config as any).channels && (
             <div>
-              Active Channels: {config.channels.join(', ')}
+              Active Channels: {(config as any).channels.map((c: any) => c?.channel_num ?? 0).join(', ')}
             </div>
           )}
         </div>
