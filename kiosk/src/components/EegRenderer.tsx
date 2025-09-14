@@ -61,7 +61,8 @@ export const EegRenderer = React.memo(function EegRenderer({
 
   const NCH   = config.channels.length;
   const NPTS  = config.samplesPerLine ?? 1024;
-  const YSCL  = 100000.0*(uiVoltageScaleFactor ?? 0.01);
+  // Dynamic scaling based on recent data peaks; uiVoltageScaleFactor multiplies this base scale
+  const peaksRef = useRef<number[]>([]);
 
   /* ---------- init (once) ---------- */
   useEffect(() => {
@@ -96,6 +97,7 @@ export const EegRenderer = React.memo(function EegRenderer({
     location.current.col = gl.getUniformLocation(prog, 'u_color');
   
     /* VBO per channel, interleaved (x,y) */
+    peaksRef.current = [];
     for (let ch = 0; ch < NCH; ch++) {
       const buf = gl.createBuffer()!;
       const arr = new Float32Array(NPTS * 2);
@@ -104,6 +106,7 @@ export const EegRenderer = React.memo(function EegRenderer({
       gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
       vbos.current.push(buf);
       cpuY.current.push(arr); // keep same reference, we’ll mutate y’s
+      peaksRef.current.push(1e-6); // small nonzero baseline
     }
   
     return () => {
@@ -116,6 +119,7 @@ export const EegRenderer = React.memo(function EegRenderer({
       }
       vbos.current = [];
       cpuY.current = [];
+      peaksRef.current = [];
       program.current = null;
       glRef.current = null;
     };
@@ -165,6 +169,15 @@ export const EegRenderer = React.memo(function EegRenderer({
       let numNew = newSamples.length;
       if (numNew === 0) continue;
 
+      // Update peak estimate with smoothing (EMA)
+      let peak = 0;
+      for (let k = 0; k < numNew; k++) {
+        const v = Math.abs(newSamples[k]);
+        if (v > peak) peak = v;
+      }
+      const prev = peaksRef.current[i] ?? 1e-6;
+      peaksRef.current[i] = prev * 0.9 + peak * 0.1;
+
       // Clamp to last NPTS samples to avoid negative offsets.
       if (numNew > NPTS) {
         newSamples.splice(0, numNew - NPTS);
@@ -212,12 +225,25 @@ export const EegRenderer = React.memo(function EegRenderer({
       gl.enableVertexAttribArray(location.current.pos);
 
       const rowH = gl.canvas.height / NCH;
+      // Compute typical peak across channels and map to pixels; multiply by UI scale
+      let typicalPeak = 0;
+      if (peaksRef.current.length >= NCH) {
+        const arr = peaksRef.current.slice(0, NCH).filter(v => v > 0);
+        if (arr.length > 0) {
+          arr.sort((a,b) => a - b);
+          typicalPeak = arr[Math.floor(arr.length * 0.7)] || arr[0];
+        }
+      }
+      const targetPx = rowH * 0.35;
+      const baseScale = typicalPeak > 0 ? (targetPx / typicalPeak) : 1.0;
+      const yScale = baseScale * (uiVoltageScaleFactor || 1);
+
       for (let i = 0; i < NCH; i++) {
         gl.bindBuffer(gl.ARRAY_BUFFER, vbos.current[i]);
         // IMPORTANT: capture the currently bound buffer for the attribute
         gl.vertexAttribPointer(location.current.pos, 2, gl.FLOAT, false, 0, 0);
         const yOff = rowH * (i + 0.5);
-        gl.uniform3f(location.current.sso!, gl.canvas.width / NPTS, YSCL, yOff);
+        gl.uniform3f(location.current.sso!, gl.canvas.width / NPTS, yScale, yOff);
         const [r,g,b] = getChannelColor(i);
         gl.uniform4f(location.current.col!, r,g,b,1);
         if (NPTS > 0) {
@@ -229,7 +255,7 @@ export const EegRenderer = React.memo(function EegRenderer({
     };
     draw();
     return () => cancelAnimationFrame(rafId.current);
-  }, [isActive, dataBuffer, NCH, NPTS, YSCL, config.channels, processData]);
+  }, [isActive, dataBuffer, NCH, NPTS, uiVoltageScaleFactor, config.channels, processData]);
 
   return <canvas ref={canvasRef} className="w-full h-full" />;
 });
