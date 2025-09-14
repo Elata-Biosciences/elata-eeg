@@ -18,3 +18,7 @@ elata_v1 = ["sensors/ads1299"]
 elata_v2 = ["sensors/ads1299"]
 mock_eeg = ["sensors/mock_eeg"]
 default = ["elata_v2"]
+
+[[bin]]
+name = "test_hardware"
+path = "src/bin/test_hardware.rs"

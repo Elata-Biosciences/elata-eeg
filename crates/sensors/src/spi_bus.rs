@@ -78,4 +78,22 @@ impl SpiBus {
 
         result.map(|_| ())
     }
+
+    /// Writes data using hardware CS (no manual CS pin control)
+    pub fn write_hw_cs(&self, data: &[u8]) -> Result<(), DriverError> {
+        let mut spi = self.spi.lock().unwrap();
+        spi.write(data).map_err(|e| DriverError::from(e)).map(|_| ())
+    }
+
+    /// Performs a transfer using hardware CS (no manual CS pin control)
+    pub fn transfer_hw_cs(
+        &self,
+        read_buffer: &mut [u8],
+        write_buffer: &[u8],
+    ) -> Result<(), DriverError> {
+        let spi = self.spi.lock().unwrap();
+        spi.transfer(read_buffer, write_buffer)
+            .map_err(|e| DriverError::from(e))
+            .map(|_| ())
+    }
 }

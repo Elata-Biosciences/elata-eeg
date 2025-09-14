@@ -1,6 +1,7 @@
+
 //! Main driver implementation for the ADS1299 chip.
 
-use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -36,13 +37,6 @@ pub struct Ads1299Inner {
 
 impl Ads1299Driver {
     /// Creates a new driver instance for one ADS1299 chip.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Configuration specific to this chip.
-    /// * `spi` - A shared SPI device handle.
-    /// * `cs_pin` - The chip select pin for this chip.
-    /// * `drdy_rx` - A channel receiver for DRDY signals.
     pub fn new(
         config: ChipConfig,
         bus: Arc<SpiBus>,
@@ -76,11 +70,11 @@ impl Ads1299Driver {
 
         // One-shot frame dump when exactly 3 channels are configured, to help debug mapping
         if true {
-            let hex = frame_buffer.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+            let _hex = frame_buffer.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
             // debug!("ADS1299 frame dump (27 bytes): {}", hex);
             for &ch in &inner.config.channels {
                 let off = 3 + (ch as usize) * 3;
-                let raw = ch_sample_to_raw(frame_buffer[off], frame_buffer[off + 1], frame_buffer[off + 2]);
+                let _raw = ch_sample_to_raw(frame_buffer[off], frame_buffer[off + 1], frame_buffer[off + 2]);
                 // debug!(
                 //     "CH{} bytes: {:02X} {:02X} {:02X} -> raw {}",
                 //     ch,
@@ -103,11 +97,9 @@ impl Ads1299Driver {
         Ok(samples)
     }
 
-    /// Send a command to the ADS1299, handling CS and SPI bus locking.
+    /// Send a command to the ADS1299 using hardware CS
     pub fn send_command(&self, command: u8) -> Result<(), DriverError> {
-        let mut inner = self.inner.lock().unwrap();
-        self.bus
-            .write(&mut inner.cs_pin, &[command])
+        self.bus.write_hw_cs(&[command])
     }
 
     /// Initialize the ADS1299 chip with raw register values.
@@ -175,42 +167,34 @@ impl Ads1299Driver {
         Ok(())
     }
 
-    pub fn read_register(&self, register: u8) -> Result<u8, DriverError> {
-        let mut inner = self.inner.lock().unwrap();
-        let write_buffer = [0x20 | (register & 0x1F), 0x00, 0x00];
-        let mut read_buffer = [0; 3];
-        self.bus
-            .transfer(&mut inner.cs_pin, &mut read_buffer, &write_buffer)
-?;
-        Ok(read_buffer[2])
+    /// Read a register from the ADS1299 using hardware CS
+    pub fn read_register(&self, reg_addr: u8) -> Result<u8, DriverError> {
+        let tx_buf = [0x20 | reg_addr, 0x00, 0x00]; // RREG command + dummy bytes
+        let mut rx_buf = [0x00, 0x00, 0x00];
+        
+        self.bus.transfer_hw_cs(&mut rx_buf, &tx_buf)?;
+        
+        // The register value should be in the third byte
+        Ok(rx_buf[2])
     }
 
-
-    /// Write a value to a register in the ADS1299.
+    /// Write a value to a register in the ADS1299 using hardware CS
     fn write_register(&self, register: u8, value: u8) -> Result<(), DriverError> {
-        let mut inner = self.inner.lock().unwrap();
         let command = 0x40 | (register & 0x1F);
         let write_buf = [command, 0x00, value]; // WREG command, num registers-1, value
-
-        let result = self
-            .bus
-            .write(&mut inner.cs_pin, &write_buf)
-;
-
-        if result.is_ok() {
-            inner.registers[register as usize] = value;
-        }
-        result
+        self.bus.write_hw_cs(&write_buf)
     }
 
-    /// Reads a single frame of data from the chip.
-    pub fn read_frame(&self, inner: &mut Ads1299Inner, buffer: &mut [u8]) -> Result<(), SensorError> {
-        // In RDATAC mode, we just need to send clock pulses to get the data.
-        // Sending NOPs is the standard way to do this.
+    /// Reads a single frame of data from the chip using hardware CS
+    pub fn read_frame(&self, _inner: &mut Ads1299Inner, buffer: &mut [u8]) -> Result<(), SensorError> {
         let write_buffer = vec![CMD_NOP; buffer.len()];
+        let mut temp_buffer = vec![0u8; buffer.len()];
+        
         self.bus
-            .transfer(&mut inner.cs_pin, buffer, &write_buffer)
+            .transfer_hw_cs(&mut temp_buffer, &write_buffer)
             .map_err(|e| SensorError::HardwareFault(e.to_string()))?;
+        
+        buffer.copy_from_slice(&temp_buffer);
         Ok(())
     }
 }
@@ -258,3 +242,4 @@ impl Drop for Ads1299Driver {
         }
     }
 }
+
