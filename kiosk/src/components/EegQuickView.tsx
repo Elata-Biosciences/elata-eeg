@@ -49,14 +49,27 @@ function Toolbar() {
   const assumed = (typeof window !== 'undefined') ? (window as any).__eeg_assumed_channels ?? null : null;
   // @ts-ignore
   const debugOn = (typeof window !== 'undefined') ? !!(window as any).__eeg_debug_headers : false;
+
+  const baseBtn: React.CSSProperties = {
+    padding: '2px 8px',
+    backgroundColor: '#111827',
+    color: '#e5e7eb',
+    border: '1px solid #4b5563',
+    borderRadius: 4,
+  };
+  const btnStyle = (active: boolean): React.CSSProperties => ({
+    ...baseBtn,
+    backgroundColor: active ? '#374151' : '#111827',
+  });
+
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-      <div style={{ fontWeight: 600 }}>Assume Channels:</div>
-      <button onClick={() => setAssumed(null)} style={{ padding: '2px 8px', background: assumed==null? '#e2e8f0':'#f1f5f9' }}>Auto</button>
-      <button onClick={() => setAssumed(4)} style={{ padding: '2px 8px', background: assumed===4? '#e2e8f0':'#f1f5f9' }}>4</button>
-      <button onClick={() => setAssumed(8)} style={{ padding: '2px 8px', background: assumed===8? '#e2e8f0':'#f1f5f9' }}>8</button>
-      <div style={{ width: 1, background: '#cbd5e1', height: 18 }} />
-      <button onClick={toggleHeaders} style={{ padding: '2px 8px', background: debugOn? '#fde68a':'#f1f5f9' }}>Header Logs {debugOn? 'ON':'OFF'}</button>
+      <div style={{ fontWeight: 600, color: '#e5e7eb' }}>Assume Channels:</div>
+      <button onClick={() => setAssumed(null)} style={btnStyle(assumed==null)}>Auto</button>
+      <button onClick={() => setAssumed(4)} style={btnStyle(assumed===4)}>4</button>
+      <button onClick={() => setAssumed(8)} style={btnStyle(assumed===8)}>8</button>
+      <div style={{ width: 1, background: '#374151', height: 18 }} />
+      <button onClick={toggleHeaders} style={btnStyle(debugOn)}>Header Logs {debugOn? 'ON':'OFF'}</button>
     </div>
   );
 }
@@ -116,7 +129,7 @@ export default function EegQuickView() {
   const channelNames = useMemo(() => latestChunk?.meta?.channel_names ?? [], [latestChunk]);
 
   return (
-    <div style={{ fontFamily: 'monospace', padding: 12 }}>
+    <div style={{ fontFamily: 'monospace', padding: 12, color: '#fff' }}>
       <h2 style={{ marginBottom: 8 }}>EEG Quick View</h2>
       <Toolbar />
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -128,11 +141,11 @@ export default function EegQuickView() {
 
       {/* Per-channel table with sparklines */}
       {channelNames.length > 0 ? (
-        <div style={{ borderTop: '1px solid #ddd', paddingTop: 8 }}>
+        <div style={{ borderTop: '1px solid #333', paddingTop: 8 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 8, alignItems: 'center' }}>
             {channelNames.map((name: string, idx: number) => (
               <React.Fragment key={idx}>
-                <div style={{ color: '#334155' }}>{name}</div>
+                <div style={{ color: '#cbd5e1' }}>{name}</div>
                 <div>
                   <Sparkline series={seriesPerChan[idx] || []} />
                 </div>
@@ -144,17 +157,17 @@ export default function EegQuickView() {
           </div>
         </div>
       ) : (
-        <div style={{ color: '#64748b' }}>Waiting for channel metadata... streaming will appear once metadata/config arrives.</div>
+        <div style={{ color: '#94a3b8' }}>Waiting for channel metadata... streaming will appear once metadata/config arrives.</div>
       )}
 
       {/* Raw tail debug */}
       <div style={{ marginTop: 12 }}>
-        <div style={{ marginBottom: 4, color: '#334155' }}>Last chunk tail (flat):</div>
+        <div style={{ marginBottom: 4, color: '#94a3b8' }}>Last chunk tail (flat):</div>
         <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{JSON.stringify(Array.from(latestChunk?.samples || []).slice(-32))}</pre>
       </div>
 
       {fullFftPacket && (
-        <div style={{ marginTop: 8, color: '#334155' }}>
+        <div style={{ marginTop: 8, color: '#94a3b8' }}>
           FFT: fft_size={fullFftPacket.fft_config.fft_size} sr={fullFftPacket.fft_config.sample_rate}
         </div>
       )}
