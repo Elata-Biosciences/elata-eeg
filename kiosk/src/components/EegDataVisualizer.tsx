@@ -23,6 +23,9 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
   const { subscribeRaw } = useEegData();
   const { fftData, fullFftPacket } = useEegDynamicData();
 
+  // Track a fallback channel list derived from incoming data when config is not yet available
+  const [fallbackChannels, setFallbackChannels] = useState<number[] | null>(null);
+
   // Effect for managing raw data subscription for the signal graph
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
@@ -31,9 +34,15 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
       console.log('[Visualizer] Subscribing to raw data for signalGraph.');
       // Clear previous data to ensure a fresh start
       signalGraphBuffer.clear();
-      
+
       unsubscribe = subscribeRaw((newSampleChunks) => {
         if (newSampleChunks.length > 0) {
+          // Derive channel count from metadata of the newest chunk
+          const lastChunk = newSampleChunks[newSampleChunks.length - 1];
+          const n = lastChunk?.meta?.channel_names?.length;
+          if (!config?.channels?.length && typeof n === 'number' && n > 0) {
+            setFallbackChannels(Array.from({ length: n }, (_, i) => i));
+          }
           signalGraphBuffer.addData(newSampleChunks);
         }
       });
@@ -46,7 +55,7 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
         unsubscribe();
       }
     };
-  }, [activeView, subscribeRaw]);
+  }, [activeView, subscribeRaw, config?.channels]);
 
   // Effect for managing FFT data subscription
   useEffect(() => {
@@ -83,25 +92,34 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
     <div ref={containerRef} className="w-full h-full relative bg-gray-950">
       {containerSize.width > 0 && containerSize.height > 0 ? (
         <>
-          {activeView === 'signalGraph' && (
-            !config || !config.channels || !Array.isArray(config.channels) || config.channels.length === 0 ? (
-              <div className="absolute inset-0 flex items-center justify-center text-gray-400">
-                Waiting for channel configuration...
-              </div>
-            ) : (
+          {activeView === 'signalGraph' && (() => {
+            const effectiveChannels = (config?.channels && Array.isArray(config.channels) && config.channels.length > 0)
+              ? config.channels
+              : (fallbackChannels && fallbackChannels.length > 0 ? fallbackChannels : null);
+            if (!effectiveChannels) {
+              return (
+                <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+                  Waiting for channel configuration...
+                </div>
+              );
+            }
+            const renderConfig = (config?.channels && config.channels.length > 0)
+              ? config
+              : { channels: effectiveChannels };
+            return (
               <div className="relative h-full min-h-[300px]">
                 <EegRenderer
-                  key={config.channels.join(',')}
+                  key={effectiveChannels.join(',')}
                   isActive={activeView === 'signalGraph'}
-                  config={config}
+                  config={renderConfig as any}
                   dataBuffer={signalGraphBuffer}
                   width={containerSize.width}
                   height={containerSize.height}
                   uiVoltageScaleFactor={uiVoltageScaleFactor}
                 />
               </div>
-            )
-          )}
+            );
+          })()}
 
           {activeView === 'appletBrainWaves' &&
             fullFftPacket &&

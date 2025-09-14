@@ -9,7 +9,10 @@ export default function EegMonitorWrapper() {
   const { pipelineStatus } = usePipeline();
   const { isReady, dataStatus } = useEegStatus();
 
-  if (!isReady) {
+  // Proceed if either the system is ready OR we are already receiving live data
+  const showMonitor = isReady || dataStatus?.dataReceived;
+
+  if (!showMonitor) {
     return (
       <div className="flex items-center justify-center h-screen relative overflow-hidden" style={{
         background: 'radial-gradient(ellipse at center, var(--color-off-cream) 0%, var(--color-cream1) 70%, var(--color-cream2) 100%)'

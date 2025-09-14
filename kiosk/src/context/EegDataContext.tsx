@@ -265,23 +265,26 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   const systemReadyGuardKey = '__eeg_system_ready_guard__';
 
   // Effect to determine when the system is truly ready
+  // Criteria:
+  // - Prefer config with channels (authoritative), OR
+  // - If data is flowing (dataReceived), allow UI to proceed to avoid being stuck on "Initializing"
   useEffect(() => {
-    console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'config channels:', config?.channels?.length);
+    console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'config channels:', config?.channels?.length, 'dataReceived:', dataReceived);
     // In development, always attempt to connect so /debug works even if pipeline state is unclear
     const shouldConnectNow = pipelineStatus === 'started' || process.env.NODE_ENV === 'development';
     if (shouldConnectNow) {
       setShouldConnect(true);
-      // Only mark ready when we actually have channel metadata
-      if (config && config.channels && config.channels.length > 0) {
-        setIsReady(true);
-        if (!(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
-          if (process.env.NODE_ENV === 'development') {
-            (window as any)[systemReadyGuardKey] = true;
-          }
-          console.log('[EegDataContext] System is ready. Final configuration has been received.');
+
+      const hasAuthoritativeConfig = !!(config && config.channels && config.channels.length > 0);
+      const canProceed = hasAuthoritativeConfig || dataReceived;
+
+      setIsReady(canProceed);
+
+      if (canProceed && !(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
+        if (process.env.NODE_ENV === 'development') {
+          (window as any)[systemReadyGuardKey] = true;
         }
-      } else {
-        setIsReady(false);
+        console.log('[EegDataContext] System is ready.', hasAuthoritativeConfig ? 'Authoritative config present.' : 'Proceeding based on live data.');
       }
     } else {
       // Only reset isReady if we're not in a reconnection state
@@ -294,7 +297,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
         }
       }
     }
-  }, [pipelineStatus, config]);
+  }, [pipelineStatus, config, dataReceived]);
 
   // Handle WebSocket status changes to detect reconnections
   const handleDataUpdate = useCallback((received: boolean) => {
