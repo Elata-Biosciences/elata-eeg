@@ -1,3 +1,72 @@
+/*!
+# Hardware Test Utility for EEG Boards
+
+This program performs comprehensive hardware testing for EEG acquisition boards using the ADS1299 family of chips.
+
+## Purpose
+The test_hardware utility verifies that:
+- GPIO pins are accessible and functioning
+- SPI communication works with the ADS1299 chip
+- The ADS1299 chip can be detected and identified
+- DRDY (Data Ready) pin shows activity
+- Power and reset control pins work
+
+## Hardware Requirements
+- Raspberry Pi with GPIO and SPI interfaces
+- ADS1299-based EEG board connected via SPI
+- Proper pin connections:
+  - DRDY: GPIO 25
+  - CS: GPIO 8 (primary) or GPIO 7 (alternative)
+  - SPI: Bus 0 (MOSI, MISO, SCLK on GPIO 10, 9, 11)
+
+## Running the Test
+
+### Prerequisites
+Ensure you have the necessary permissions to access GPIO and SPI:
+```bash
+# Add user to gpio and spi groups
+sudo usermod -a -G gpio,spi $USER
+
+# Or run with sudo (not recommended for development)
+sudo ./test_hardware
+```
+
+### Build and Run
+```bash
+# From the project root
+cd crates/boards
+cargo build --bin test_hardware
+cargo run --bin test_hardware
+
+# Or from project root
+cargo run --bin test_hardware
+```
+
+### Expected Output
+The test will output detailed information about:
+- GPIO pin states
+- SPI communication attempts
+- ADS1299 chip detection (looks for ID 0x3E for ADS1299)
+- DRDY pin monitoring for 10 seconds
+
+### Troubleshooting
+- **Permission denied**: Run with `sudo` or add user to gpio/spi groups
+- **No ADS1299 detected**: Check SPI wiring and power connections
+- **DRDY never changes**: Hardware may not be powered or configured correctly
+- **SPI errors**: Verify SPI bus and chip select pin connections
+
+## Test Sequence
+1. **GPIO Access Test**: Verifies GPIO pins can be controlled
+2. **SPI Communication Test**: Tests different SPI speeds and modes
+3. **ADS1299 Detection**: Attempts to read chip ID register
+4. **Power/Reset Test**: Activates control pins and re-tests SPI
+5. **DRDY Monitoring**: Watches for data ready signal activity
+
+## Exit Codes
+- 0: Test completed successfully
+- Non-zero: Hardware or communication error encountered
+*/
+
 use rppal::gpio::Gpio;
 use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
 use std::time::Duration;
