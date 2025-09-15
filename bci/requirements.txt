@@ -1,0 +1,8 @@
+# Common BCI/ML libraries
+tensorflow
+scikit-learn
+pandas
+numpy
+matplotlib
+jupyterlab
+seaborn
