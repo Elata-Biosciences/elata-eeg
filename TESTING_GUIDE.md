@@ -2,57 +2,33 @@
 
 ## Overview
 
-This guide covers the **two-tier testing architecture** for the EEG daemon system:
-1. **Unit Tests** - Hardware-independent mathematical validation (runs anywhere)
-2. **Integration Tests** - Hardware-dependent system validation (Linux/Pi only)
+This guide covers the testing strategy for the EEG daemon system:
+1. **Unit Tests** - Core data structures and configuration (runs anywhere)
+2. **Integration Tests** - Full system with hardware drivers (Linux/Pi only)
 
 ## 🧮 **UNIT TESTS** (Hardware-Independent)
 
-These tests validate **pure mathematical operations and algorithms** without requiring hardware dependencies. They run on **any platform** (macOS, Linux, Windows) and form the foundation of our testing strategy.
+These tests validate core data structures, configuration types, and basic functionality without requiring hardware dependencies. They run on **any platform** (macOS, Linux, Windows).
 
-### 1. EEG Types Comprehensive Test Suite (31 TESTS PASSING ✅)
+### EEG Types Test Suite (9 tests)
 ```bash
 cargo test -p eeg_types
 ```
 
 **What it tests:**
 
-**A. Core Data Structures (4 tests)**
+**Core Data Structures (4 tests)**
 - Event system data structures (`EegPacket`, `SensorEvent`, etc.)
 - Channel sample handling  
 - Event timestamp validation
 - Recording event filtering
 
-**B. Critical ADC Mathematics (9 tests)**
-- 24-bit ADC sign extension
-- Voltage conversion accuracy
-- Gain scaling behavior
-- Reference voltage scaling
-- Precision and rounding
-- Typical EEG signal ranges
-- Overflow/underflow handling
-- Boundary condition testing
-- Extreme value handling
-
-**C. Signal Processing Algorithms (12 tests)**
-- Biquad filter coefficient calculation (lowpass, highpass, notch)
-- Digital filter processing (Direct Form II Transposed)
-- EEG signal validation and classification
-- Sample rate validation and Nyquist frequency calculations
-- Channel mapping and configuration validation
-- Timestamp calculations and sample period math
-- Circular buffer management
-- LSB voltage calculations
-- Frequency domain calculations and EEG band classification
-- Electrode impedance calculations
-
-**D. Configuration Validation (6 tests)**
-- Filter configuration validation
-- Daemon configuration validation
-- Driver type selection logic
-- Sensor metadata validation
-- Configuration defaults testing
-- Edge case handling
+**Configuration & Types (5 tests)**
+- DaemonConfig structure and default values
+- DriverType enum variants and serialization
+- SensorMeta structure and field validation
+- JSON serialization/deserialization
+- Configuration type safety
 
 **Expected output:**
 ```
@@ -64,54 +40,24 @@ test event::tests::test_sensor_event_timestamp ... ok
 test event::tests::test_recording_event_filters ... ok
 test result: ok. 4 passed; 0 failed
 
-Running tests/configuration_tests.rs
-running 6 tests
-test test_configuration_defaults ... ok
-test test_daemon_config_validation ... ok
-test test_configuration_edge_cases ... ok
-test test_filter_config_validation ... ok
-test test_sensor_meta_validation ... ok
-test test_driver_type_selection ... ok
-test result: ok. 6 passed; 0 failed
-
-Running tests/critical_math_tests.rs
-running 9 tests
-test test_24bit_adc_sign_extension ... ok
-test test_voltage_conversion_mathematics ... ok
-test test_gain_scaling_behavior ... ok
-test test_reference_voltage_scaling ... ok
-test test_adc_range_boundaries ... ok
-test test_precision_and_rounding ... ok
-test test_typical_eeg_signal_ranges ... ok
-test test_overflow_and_underflow_behavior ... ok
-test test_extreme_gain_settings ... ok
-test result: ok. 9 passed; 0 failed
-
-Running tests/signal_processing_tests.rs
-running 12 tests
-test test_biquad_filter_processing ... ok
-test test_channel_mapping_logic ... ok
-test test_data_buffer_management ... ok
-test test_eeg_signal_validation ... ok
-test test_filter_coefficient_calculation ... ok
-test test_gain_to_lsb_voltage ... ok
-test test_impedance_calculations ... ok
-test test_highpass_filter_coefficients ... ok
-test test_frequency_domain_calculations ... ok
-test test_notch_filter_coefficients ... ok
-test test_sample_rate_validation ... ok
-test test_timestamp_calculations ... ok
-test result: ok. 12 passed; 0 failed
+Running tests/config_and_types_tests.rs
+running 5 tests
+test test_daemon_config_creation_and_defaults ... ok
+test test_driver_type_variants ... ok
+test test_sensor_meta_structure ... ok
+test test_driver_type_serialization ... ok
+test test_serialization_works ... ok
+test result: ok. 5 passed; 0 failed
 ```
 
-**TOTAL: 31 passing tests validating comprehensive EEG system functionality**
+**TOTAL: 9 passing tests validating real EEG system data structures and configuration**
 
-**Why These Unit Tests Are Critical:**
-- They validate **every mathematical operation** that processes EEG data
-- They ensure **medical-grade accuracy** (nanovolt precision)
-- They guarantee **real-time performance** (sub-nanosecond operations)
-- They **prevent data corruption** from ADC conversion bugs
-- They run **everywhere** - no platform dependencies
+**Why These Tests Are Important:**
+- Validate **core data structures** used throughout the EEG system
+- Ensure **configuration files** can be loaded and saved correctly
+- Test **type safety** and prevent configuration errors
+- Verify **cross-platform compatibility** of basic functionality
+- Provide **solid foundation** for adding more tests later
 
 ---
 
@@ -181,11 +127,8 @@ cargo test -p boards --features="elata_v2"
 
 **What You Can Run Locally:**
 ```bash
-# ✅ ALWAYS WORKS - Unit tests for mathematical validation
+# ✅ ALWAYS WORKS - Core data structure and configuration tests
 cargo test -p eeg_types
-
-# ✅ ALWAYS WORKS - Performance benchmarks  
-cargo bench -p eeg_types
 
 # ✅ ALWAYS WORKS - Code quality checks
 cargo fmt --all
@@ -193,23 +136,22 @@ cargo clippy -p eeg_types -- -D warnings
 ```
 
 **Platform Support:**
-- **✅ macOS**: Unit tests work perfectly
-- **✅ Linux**: Unit tests + integration tests work
-- **✅ Windows**: Unit tests work (integration tests untested)
+- **✅ macOS**: Core tests work perfectly
+- **✅ Linux**: Core tests + integration tests work
+- **✅ Windows**: Core tests work (integration tests untested)
 
 ### 🐧 **CI/CD Environment (Ubuntu Linux)**
 
 **Automated Test Pipeline:**
 ```bash
-# Unit Tests (guaranteed to work)
+# Core Tests (guaranteed to work)
 cargo test -p eeg_types --verbose
-cargo bench -p eeg_types
 
-# Integration Tests (Linux-specific)
-cargo test -p sensors --features="mock_eeg" --no-default-features
-cargo test -p pipeline 
-cargo test -p boards --features="mock_eeg" --no-default-features
-cargo test -p adc_daemon --features="boards/mock_eeg" --no-default-features
+# Integration Tests (Linux-specific, currently skipped)
+# cargo test -p sensors --features="mock_eeg" --no-default-features
+# cargo test -p pipeline 
+# cargo test -p boards --features="mock_eeg" --no-default-features
+# cargo test -p adc_daemon --features="boards/mock_eeg" --no-default-features
 ```
 
 ### 🥧 **Raspberry Pi (Production Hardware)**

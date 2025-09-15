@@ -66,12 +66,9 @@ jobs:
     # Run core unit tests (hardware-independent)
     - name: Run Unit Tests
       run: |
-        # Test comprehensive EEG types (31 tests covering critical math and algorithms)
-        echo "🧮 Running mathematical validation tests..."
+        # Test eeg_types - core data structures and configurations (9 real tests)
+        echo "🧮 Running eeg_types tests..."
         cargo test -p eeg_types --verbose
-        
-        echo "📊 Running performance benchmarks..."
-        cargo bench -p eeg_types --bench critical_math_benchmarks
     
     # Integration tests are skipped in CI due to hardware dependencies
     # They should be run manually on Linux/Pi platforms
