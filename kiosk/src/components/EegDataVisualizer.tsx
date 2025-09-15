@@ -23,6 +23,12 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
   const { subscribeRaw } = useEegData();
   const { fftData, fullFftPacket } = useEegDynamicData();
 
+  // Local FFT fallback when backend FFT packets are not available
+  const [localFft, setLocalFft] = useState<any | null>(null);
+  const perChannelRef = useRef<number[][]>([]);
+  const sampleRateRef = useRef<number>(250);
+
+
   // Track a fallback channel list derived from incoming data when config is not yet available
   const [fallbackChannels, setFallbackChannels] = useState<number[] | null>(null);
 
@@ -64,6 +70,97 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
       setViewReadyState(s => ({ ...s, appletBrainWaves: true }));
     }
   }, [activeView]);
+  // When FFT view is active but backend FFT is absent, build a local FFT fallback from raw samples
+  useEffect(() => {
+    if (activeView !== 'appletBrainWaves') return;
+
+    let unsubscribe: (() => void) | null = null;
+    perChannelRef.current = [];
+
+    unsubscribe = subscribeRaw((newSampleChunks) => {
+      if (!newSampleChunks || newSampleChunks.length === 0) return;
+      const lastChunk = newSampleChunks[newSampleChunks.length - 1] as any;
+      const n = lastChunk?.meta?.channel_names?.length;
+      const sr = lastChunk?.meta?.sample_rate;
+      if (typeof sr === 'number' && sr > 0) sampleRateRef.current = sr;
+      if (typeof n === 'number' && n > 0) {
+        if (perChannelRef.current.length !== n) {
+          perChannelRef.current = Array.from({ length: n }, () => [] as number[]);
+        }
+        for (const chunk of newSampleChunks) {
+          const channels = (chunk as any)?.meta?.channel_names?.length ?? n;
+          const samples = (chunk as any)?.samples as Float32Array | Int32Array;
+          if (!samples || samples.length === 0 || !channels) continue;
+          const frames = Math.floor(samples.length / channels);
+          for (let f = 0; f < frames; f++) {
+            for (let ch = 0; ch < channels; ch++) {
+              const v = samples[f * channels + ch] as number;
+              perChannelRef.current[ch].push(typeof v === 'number' ? v : Number(v));
+            }
+          }
+        }
+        // Cap length
+        for (let ch = 0; ch < perChannelRef.current.length; ch++) {
+          const arr = perChannelRef.current[ch];
+          if (arr.length > 4096) perChannelRef.current[ch] = arr.slice(arr.length - 4096);
+        }
+      }
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [activeView, subscribeRaw]);
+
+  // Periodically compute local FFT if backend FFT is not available
+  useEffect(() => {
+    if (activeView !== 'appletBrainWaves') return;
+
+    const N = 512;
+    const timer = setInterval(() => {
+      if (fullFftPacket && (fullFftPacket as any).psd_packets) {
+        if (localFft !== null) setLocalFft(null);
+        return;
+      }
+      const buffers = perChannelRef.current;
+      if (!buffers || buffers.length === 0) return;
+      const channels = buffers.length;
+      const sr = sampleRateRef.current || 250;
+
+      const psd_packets: { channel: number; psd: number[] }[] = [];
+      for (let ch = 0; ch < channels; ch++) {
+        const arr = buffers[ch];
+        if (!arr || arr.length < N) continue;
+        const segment = arr.slice(arr.length - N);
+        // Hann window
+        const windowed = segment.map((v, i) => v * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1))));
+        const half = Math.floor(N / 2);
+        const psd: number[] = new Array(half).fill(0);
+        for (let k = 0; k < half; k++) {
+          let re = 0, im = 0;
+          const ang = -2 * Math.PI * k / N;
+          for (let n = 0; n < N; n++) {
+            const theta = ang * n;
+            const w = windowed[n];
+            re += w * Math.cos(theta);
+            im += w * Math.sin(theta);
+          }
+          const mag2 = (re * re + im * im) / N;
+          psd[k] = Math.log10(mag2 + 1e-9);
+        }
+        psd_packets.push({ channel: ch, psd });
+      }
+
+      if (psd_packets.length > 0) {
+        setLocalFft({
+          psd_packets,
+          fft_config: { fft_size: N, sample_rate: sr, window_function: 'hann' },
+        });
+      }
+    }, 700);
+
+    return () => clearInterval(timer);
+  }, [activeView, fullFftPacket, localFft]);
 
   // Effect to setup ResizeObserver
   useLayoutEffect(() => {
@@ -78,7 +175,7 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
     });
 
     resizeObserver.observe(target);
-    
+
     // Set initial size
     setContainerSize({
         width: target.offsetWidth,
@@ -121,16 +218,24 @@ export default function EegDataVisualizer({ activeView, config, uiVoltageScaleFa
             );
           })()}
 
-          {activeView === 'appletBrainWaves' &&
-            fullFftPacket &&
-            fullFftPacket.psd_packets && (
+          {activeView === 'appletBrainWaves' && (() => {
+            const fftForRender = fullFftPacket && (fullFftPacket as any).psd_packets ? fullFftPacket : localFft;
+            if (!fftForRender) {
+              return (
+                <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+                  No FFT data available yet...
+                </div>
+              );
+            }
+            return (
               <FftRenderer
-                data={fullFftPacket}
+                data={fftForRender as any}
                 isActive={activeView === 'appletBrainWaves'}
                 containerWidth={containerSize.width}
                 containerHeight={containerSize.height}
               />
-            )}
+            );
+          })()}
         </>
       ) : (
         <div className="absolute inset-0 flex items-center justify-center text-gray-400">

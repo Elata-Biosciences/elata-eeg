@@ -27,7 +27,7 @@ export default function EegMonitorWebGL() {
   // Get all data and config from the new central context
   const { authoritative: config, draft, updateDraft, applyConfig, pending, error } = useEegConfig();
   const { dataStatus } = useEegStatus();
-  const { dataReceived, driverError, wsStatus } = dataStatus;
+  const { dataReceived, driverError, wsStatus, usingSynthMeta } = dataStatus as any;
   const { fatalError } = useEventStreamData();
   const { subscribe } = useEventStream();
   const [isRecording, setIsRecording] = useState(false);
@@ -197,6 +197,12 @@ export default function EegMonitorWebGL() {
                   <>
                     <span className="mx-2">•</span>
                     <span>{(config as any).board_driver || 'Unknown'}</span>
+                  </>
+                )}
+                {usingSynthMeta && (
+                  <>
+                    <span className="mx-2">•</span>
+                    <span>Config: Fallback</span>
                   </>
                 )}
               </div>

@@ -51,6 +51,7 @@ interface EegDataStatusContextType {
     driverError: string | null;
     wsStatus: string;
     isReconnecting: boolean;
+    usingSynthMeta?: boolean;
   };
   isReady: boolean;
 }
@@ -77,6 +78,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   const [dataReceived, setDataReceived] = useState(false);
   const [driverError, setDriverError] = useState<string | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
+  const [usingSynthMeta, setUsingSynthMeta] = useState(false); // Are we using synthesized metadata?
   const [isReady, setIsReady] = useState(false); // State to track final configuration readiness
   const [shouldConnect, setShouldConnect] = useState(false); // State to control when to connect
   const rawDataSubscribersRef = useRef({ raw: {} as Record<string, RawDataCallback> });
@@ -390,6 +392,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
         if (msg.message_type === 'meta_update') {
           const metaUpdate = msg as MetaUpdateMsg;
           setMetadata(prev => ({ ...prev, [metaUpdate.topic]: metaUpdate.meta }));
+          setUsingSynthMeta(false);
           return;
         }
         
@@ -475,6 +478,7 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
             data_type: header.packet_type === 'RawI32' ? 'i32' : 'f32',
           } as SensorMeta;
           setMetadata(prev => ({ ...prev, [header.topic]: topicMeta! }));
+          setUsingSynthMeta(true);
           console.warn('[EegDataContext] Synthesized metadata for topic', header.topic, 'rev', header.meta_rev, 'num_channels=', numChannels);
         }
 
@@ -590,9 +594,10 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
       driverError,
       wsStatus,
       isReconnecting,
+      usingSynthMeta,
     },
     isReady,
-  }), [dataReceived, driverError, wsStatus, isReconnecting, isReady]);
+  }), [dataReceived, driverError, wsStatus, isReconnecting, usingSynthMeta, isReady]);
 
   return (
     <EegDataStableContext.Provider value={stableValue}>
