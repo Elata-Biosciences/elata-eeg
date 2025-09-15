@@ -10,8 +10,8 @@ pub mod event;
 
 // Re-export commonly used types (with explicit imports to avoid ambiguity)
 pub use comms::*;
-pub use config::{DaemonConfig, DriverType};
 pub use config::FilterConfig as ConfigFilterConfig;
+pub use config::{DaemonConfig, DriverType};
 pub use data::*;
-pub use event::{EegPacket, FilteredEegPacket, SensorEvent};
 pub use event::FilterConfig as EventFilterConfig;
+pub use event::{EegPacket, FilteredEegPacket, SensorEvent};

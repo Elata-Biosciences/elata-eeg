@@ -180,40 +180,27 @@ fn test_sensor_meta_validation() {
         Ok(())
     }
 
-    // Test valid sensor meta
-    let valid_meta = SensorMeta {
-        sensor_id: 1,
-        meta_rev: 1,
-        schema_ver: 1,
-        source_type: "ADS1299".to_string(),
-        v_ref: 4.5,
-        adc_bits: 24,
-        gain: 24.0,
-        sample_rate: 500,
-        channel_names: vec!["Fp1".to_string(), "Fp2".to_string()],
-        offset_code: 0,
-        is_twos_complement: true,
-        filter: None,
-    };
+    // Test valid sensor meta (using Default and modifying specific fields)
+    let mut valid_meta = SensorMeta::default();
+    valid_meta.sensor_id = 1;
+    valid_meta.meta_rev = 1;
+    valid_meta.source_type = "ADS1299".to_string();
+    valid_meta.gain = 24.0;
+    valid_meta.sample_rate = 500;
+    valid_meta.channel_names = vec!["Fp1".to_string(), "Fp2".to_string()];
     assert!(validate_sensor_meta(&valid_meta).is_ok());
 
     // Test invalid configurations
-    let zero_sample_rate = SensorMeta {
-        sample_rate: 0, // Invalid
-        ..valid_meta.clone()
-    };
+    let mut zero_sample_rate = valid_meta.clone();
+    zero_sample_rate.sample_rate = 0; // Invalid
     assert!(validate_sensor_meta(&zero_sample_rate).is_err());
 
-    let negative_vref = SensorMeta {
-        v_ref: -4.5, // Invalid
-        ..valid_meta.clone()
-    };
+    let mut negative_vref = valid_meta.clone();
+    negative_vref.v_ref = -4.5; // Invalid
     assert!(validate_sensor_meta(&negative_vref).is_err());
 
-    let zero_gain = SensorMeta {
-        gain: 0.0, // Invalid
-        ..valid_meta.clone()
-    };
+    let mut zero_gain = valid_meta.clone();
+    zero_gain.gain = 0.0; // Invalid
     assert!(validate_sensor_meta(&zero_gain).is_err());
 }
 
