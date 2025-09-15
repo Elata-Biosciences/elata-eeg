@@ -38,7 +38,7 @@ impl SpiBus {
     /// Writes data to the SPI bus, wrapping the transaction in a manual CS toggle.
     pub fn write(&self, cs_pin: &mut OutputPin, data: &[u8]) -> Result<(), DriverError> {
         let mut spi = self.spi.lock().unwrap();
-        
+
         // Ensure CS is high before we start
         cs_pin.set_high();
 
@@ -82,7 +82,9 @@ impl SpiBus {
     /// Writes data using hardware CS (no manual CS pin control)
     pub fn write_hw_cs(&self, data: &[u8]) -> Result<(), DriverError> {
         let mut spi = self.spi.lock().unwrap();
-        spi.write(data).map_err(|e| DriverError::from(e)).map(|_| ())
+        spi.write(data)
+            .map_err(|e| DriverError::from(e))
+            .map(|_| ())
     }
 
     /// Performs a transfer using hardware CS (no manual CS pin control)

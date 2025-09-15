@@ -1,16 +1,16 @@
 //! Basic pipeline example demonstrating the new, simplified architecture.
 
-use std::sync::Arc;
-use pipeline::allocator::{PacketAllocator, RecycledF32Vec};
 use eeg_types::SensorMeta;
-use pipeline::data::{RtPacket, PacketData, PacketHeader};
+use flume as mpsc;
+use pipeline::allocator::{PacketAllocator, RecycledF32Vec};
 use pipeline::config::StageConfig;
 use pipeline::control::PipelineEvent;
+use pipeline::data::{PacketData, PacketHeader, RtPacket};
+use pipeline::error::StageError;
+use pipeline::registry::StageFactory;
 use pipeline::stage::{Stage, StageContext, StageInitCtx};
 use pipeline::stages::to_voltage::ToVoltageFactory;
-use pipeline::error::StageError;
-use flume as mpsc;
-use pipeline::registry::StageFactory;
+use std::sync::Arc;
 
 // A simple stage that doubles each sample.
 struct DoublerStage;
@@ -32,7 +32,10 @@ impl Stage for DoublerStage {
                 header: packet_data.header.clone(),
                 samples: new_samples,
             };
-            Ok(vec![("out".to_string(), Arc::new(RtPacket::Voltage(new_packet_data)))])
+            Ok(vec![(
+                "out".to_string(),
+                Arc::new(RtPacket::Voltage(new_packet_data)),
+            )])
         } else {
             Err(StageError::BadConfig(
                 "Expected RtPacket::Voltage".to_string(),
@@ -57,7 +60,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sample_rate: 250,
         offset_code: 0,
         is_twos_complement: true,
-        channel_names: vec!["ch0".to_string(), "ch1".to_string(), "ch2".to_string(), "ch3".to_string()],
+        channel_names: vec![
+            "ch0".to_string(),
+            "ch1".to_string(),
+            "ch2".to_string(),
+            "ch3".to_string(),
+        ],
         #[cfg(feature = "meta-tags")]
         tags: Default::default(),
         filter: None,
@@ -81,7 +89,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Input Samples: {:?}", d.samples);
     }
 
-
     // 2. Instantiate the stages
     let (event_tx, _) = mpsc::unbounded::<PipelineEvent>();
     let system_config = pipeline::config::SystemConfig {
@@ -97,14 +104,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         websocket_sender: None,
         system_config: &system_config,
     };
-    let (mut to_voltage_stage, _) = ToVoltageFactory::default().create(&StageConfig {
-        name: "to_voltage".to_string(),
-        stage_type: "ToVoltage".to_string(),
-        params: Default::default(),
-        inputs: Default::default(),
-        outputs: vec![],
-        channel_capacity: None,
-    }, &init_ctx)?;
+    let (mut to_voltage_stage, _) = ToVoltageFactory::default().create(
+        &StageConfig {
+            name: "to_voltage".to_string(),
+            stage_type: "ToVoltage".to_string(),
+            params: Default::default(),
+            inputs: Default::default(),
+            outputs: vec![],
+            channel_capacity: None,
+        },
+        &init_ctx,
+    )?;
     let mut doubler_stage = DoublerStage;
     let mut ctx = StageContext::new(event_tx, allocator.clone());
 

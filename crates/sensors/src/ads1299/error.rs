@@ -48,10 +48,10 @@ pub struct HardwareLockGuard<'a> {
 
 impl<'a> HardwareLockGuard<'a> {
     /// Create a new hardware lock guard.
-    /// 
+    ///
     /// # Returns
     /// A new hardware lock guard if the lock was acquired successfully.
-    /// 
+    ///
     /// # Errors
     /// Returns an error if the lock could not be acquired or if the hardware is already in use.
     pub fn new(hardware_lock: &'a std::sync::Mutex<bool>) -> Result<Self, DriverError> {

@@ -1,5 +1,5 @@
 //! DSP filtering module for EEG signal processing
-//! 
+//!
 //! This module provides signal processing capabilities including
 //! high-pass, low-pass, and powerline filtering for EEG data.
 
@@ -8,16 +8,19 @@ use std::f32::consts::PI;
 // Simple biquad filter coefficients
 #[derive(Clone, Debug)]
 struct FilterCoefficients {
-    b0: f32, b1: f32, b2: f32,  // numerator coefficients
-    a1: f32, a2: f32,           // denominator coefficients (a0 is normalized to 1)
+    b0: f32,
+    b1: f32,
+    b2: f32, // numerator coefficients
+    a1: f32,
+    a2: f32, // denominator coefficients (a0 is normalized to 1)
 }
 
 // Direct Form II Transposed biquad filter implementation
 #[derive(Clone, Debug)]
 struct DigitalFilter {
     coeffs: FilterCoefficients,
-    z1: f32,  // delay line 1
-    z2: f32,  // delay line 2
+    z1: f32, // delay line 1
+    z2: f32, // delay line 2
 }
 
 impl DigitalFilter {
@@ -32,12 +35,12 @@ impl DigitalFilter {
     fn process(&mut self, x: f32) -> f32 {
         // Clamp input to prevent extreme values
         let x = x.clamp(-8192.0, 8191.0);
-        
+
         // Direct Form II Transposed implementation
         let y = self.coeffs.b0 * x + self.z1;
         self.z1 = self.coeffs.b1 * x - self.coeffs.a1 * y + self.z2;
         self.z2 = self.coeffs.b2 * x - self.coeffs.a2 * y;
-        
+
         // Clamp output to prevent instability
         y.clamp(-8192.0, 8191.0)
     }
@@ -55,16 +58,16 @@ struct LowpassFilter(DigitalFilter);
 
 impl NotchFilter {
     fn new(sample_rate: f32, notch_freq: f32) -> Self {
-        let q_factor = 30.0;  // High Q for narrow notch
+        let q_factor = 30.0; // High Q for narrow notch
         let coeffs = Self::notch_coefficients(sample_rate, notch_freq, q_factor);
         NotchFilter(DigitalFilter::new(coeffs))
     }
-    
+
     fn notch_coefficients(sample_rate: f32, freq: f32, q: f32) -> FilterCoefficients {
         let omega = 2.0 * PI * freq / sample_rate;
         let alpha = omega.sin() / (2.0 * q);
         let cos_omega = omega.cos();
-        
+
         // Notch filter coefficients
         let b0 = 1.0;
         let b1 = -2.0 * cos_omega;
@@ -72,7 +75,7 @@ impl NotchFilter {
         let a0 = 1.0 + alpha;
         let a1 = -2.0 * cos_omega;
         let a2 = 1.0 - alpha;
-        
+
         // Normalize by a0
         FilterCoefficients {
             b0: b0 / a0,
@@ -82,7 +85,7 @@ impl NotchFilter {
             a2: a2 / a0,
         }
     }
-    
+
     fn process(&mut self, x: f32) -> f32 {
         self.0.process(x)
     }
@@ -94,12 +97,12 @@ impl HighpassFilter {
         let coeffs = Self::highpass_coefficients(sample_rate, cutoff_freq, q);
         Self(DigitalFilter::new(coeffs))
     }
-    
+
     fn highpass_coefficients(sample_rate: f32, freq: f32, q: f32) -> FilterCoefficients {
         let omega = 2.0 * PI * freq / sample_rate;
         let alpha = omega.sin() / (2.0 * q);
         let cos_omega = omega.cos();
-        
+
         // High-pass filter coefficients
         let b0 = (1.0 + cos_omega) / 2.0;
         let b1 = -(1.0 + cos_omega);
@@ -107,7 +110,7 @@ impl HighpassFilter {
         let a0 = 1.0 + alpha;
         let a1 = -2.0 * cos_omega;
         let a2 = 1.0 - alpha;
-        
+
         // Normalize by a0
         FilterCoefficients {
             b0: b0 / a0,
@@ -117,7 +120,7 @@ impl HighpassFilter {
             a2: a2 / a0,
         }
     }
-    
+
     fn process(&mut self, x: f32) -> f32 {
         self.0.process(x)
     }
@@ -129,12 +132,12 @@ impl LowpassFilter {
         let coeffs = Self::lowpass_coefficients(sample_rate, cutoff_freq, q);
         Self(DigitalFilter::new(coeffs))
     }
-    
+
     fn lowpass_coefficients(sample_rate: f32, freq: f32, q: f32) -> FilterCoefficients {
         let omega = 2.0 * PI * freq / sample_rate;
         let alpha = omega.sin() / (2.0 * q);
         let cos_omega = omega.cos();
-        
+
         // Low-pass filter coefficients
         let b0 = (1.0 - cos_omega) / 2.0;
         let b1 = 1.0 - cos_omega;
@@ -142,7 +145,7 @@ impl LowpassFilter {
         let a0 = 1.0 + alpha;
         let a1 = -2.0 * cos_omega;
         let a2 = 1.0 - alpha;
-        
+
         // Normalize by a0
         FilterCoefficients {
             b0: b0 / a0,
@@ -152,7 +155,7 @@ impl LowpassFilter {
             a2: a2 / a0,
         }
     }
-    
+
     fn process(&mut self, x: f32) -> f32 {
         self.0.process(x)
     }
@@ -180,28 +183,37 @@ impl SignalProcessor {
                  sample_rate, num_channels, dsp_high_pass_cutoff, dsp_low_pass_cutoff, powerline_filter_hz);
         // Add validation for sample rate
         assert!(sample_rate > 0, "Sample rate must be positive");
-        assert!(sample_rate >= 200, "Sample rate should be at least 200Hz for proper filter operation");
-        
+        assert!(
+            sample_rate >= 200,
+            "Sample rate should be at least 200Hz for proper filter operation"
+        );
+
         let sample_rate_f32 = sample_rate as f32;
-        
+
         // Create powerline notch filters based on the configuration
         let powerline_notch_filters = match powerline_filter_hz {
-            Some(freq) if freq == 50 || freq == 60 => {
-                Some((0..num_channels)
+            Some(freq) if freq == 50 || freq == 60 => Some(
+                (0..num_channels)
                     .map(|_| NotchFilter::new(sample_rate_f32, freq as f32))
-                    .collect())
-            },
+                    .collect(),
+            ),
             _ => {
-                println!("[SignalProcessor::new] Powerline filter is OFF or invalid value: {:?}", powerline_filter_hz);
+                println!(
+                    "[SignalProcessor::new] Powerline filter is OFF or invalid value: {:?}",
+                    powerline_filter_hz
+                );
                 None // No powerline filter
             }
         };
         if powerline_notch_filters.is_some() {
-            println!("[SignalProcessor::new] Powerline notch filters CREATED for {:?} Hz", powerline_filter_hz.unwrap());
+            println!(
+                "[SignalProcessor::new] Powerline notch filters CREATED for {:?} Hz",
+                powerline_filter_hz.unwrap()
+            );
         } else {
             println!("[SignalProcessor::new] Powerline notch filters are NONE");
         }
-        
+
         Self {
             num_channels,
             powerline_notch_filters,
@@ -213,7 +225,7 @@ impl SignalProcessor {
                 .collect(),
         }
     }
-    
+
     /// Process a chunk of samples for a specific channel
     ///
     /// This is more efficient than processing samples individually when working with batches
@@ -225,32 +237,37 @@ impl SignalProcessor {
     ///
     /// # Returns
     /// * `Result<(), &'static str>` - Ok if successful, Err with message if failed
-    pub fn process_chunk(&mut self, channel: usize, samples: &[f32], output: &mut [f32]) -> Result<(), &'static str> {
+    pub fn process_chunk(
+        &mut self,
+        channel: usize,
+        samples: &[f32],
+        output: &mut [f32],
+    ) -> Result<(), &'static str> {
         // Validate inputs
         if channel >= self.num_channels {
             return Err("Channel index out of bounds");
         }
-        
+
         if output.len() < samples.len() {
             return Err("Output buffer too small");
         }
-        
+
         // Process each sample through the filter chain
         for (i, &sample) in samples.iter().enumerate() {
             let mut processed = sample;
             processed = self.highpass_filters[channel].process(processed);
-            
+
             // Apply powerline notch filter if configured
             if let Some(notch_filters) = &mut self.powerline_notch_filters {
                 if channel < notch_filters.len() {
                     processed = notch_filters[channel].process(processed);
                 }
             }
-            
+
             processed = self.lowpass_filters[channel].process(processed);
             output[i] = processed;
         }
-        
+
         Ok(())
     }
 }

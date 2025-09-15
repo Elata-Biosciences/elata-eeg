@@ -3,17 +3,18 @@ use log::info;
 use rppal::gpio::Gpio;
 use rppal::spi::{Bus, Mode};
 use sensors::{
+    AdcConfig, AdcDriver, DriverError, DriverStatus,
     ads1299::{
         driver::Ads1299Driver,
         registers::{
-            self, BIAS_SENSN_REG, CHN_OFF, CHN_REG, CONFIG1_REG, CONFIG2_REG, CONFIG3_REG,
-            CONFIG4_REG, LOFF_SESP_REG, MISC1_REG, CH1SET_ADDR,
-BIASREF_INT , PD_BIAS , PD_REFBUF, BIAS_SENS_OFF_MASK, SRB1,MUX_NORMAL        },
+            self, BIAS_SENS_OFF_MASK, BIAS_SENSN_REG, BIASREF_INT, CH1SET_ADDR, CHN_OFF, CHN_REG,
+            CONFIG1_REG, CONFIG2_REG, CONFIG3_REG, CONFIG4_REG, LOFF_SESP_REG, MISC1_REG,
+            MUX_NORMAL, PD_BIAS, PD_REFBUF, SRB1,
+        },
     },
     spi_bus::SpiBus,
-    AdcConfig, AdcDriver, DriverError, DriverStatus,
 };
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{Arc, atomic::AtomicBool};
 
 pub struct ElataV1Driver {
     inner: Ads1299Driver,
@@ -27,19 +28,17 @@ impl ElataV1Driver {
                 "ElataV1 driver only supports single-chip configurations".to_string(),
             ));
         }
-        
+
         let chip_config = config.chips.get(0).ok_or_else(|| {
-            DriverError::ConfigurationError("At least one chip must be configured for ElataV1".to_string())
+            DriverError::ConfigurationError(
+                "At least one chip must be configured for ElataV1".to_string(),
+            )
         })?;
 
         let gpio = Gpio::new()?;
         let cs_pin = gpio.get(chip_config.cs_pin)?.into_output();
 
-        let bus = Arc::new(SpiBus::new(
-            Bus::Spi0,
-            1_000_000,
-            Mode::Mode1,
-        )?);
+        let bus = Arc::new(SpiBus::new(Bus::Spi0, 1_000_000, Mode::Mode1)?);
 
         let inner = Ads1299Driver::new(chip_config.clone(), bus, cs_pin)?;
         Ok(Self { inner, config })
@@ -50,12 +49,17 @@ impl AdcDriver for ElataV1Driver {
     fn initialize(&mut self) -> Result<(), DriverError> {
         info!("Initializing ElataV1 board...");
         let chip_config = self.config.chips.get(0).ok_or_else(|| {
-            DriverError::ConfigurationError("At least one chip must be configured for ElataV1".to_string())
+            DriverError::ConfigurationError(
+                "At least one chip must be configured for ElataV1".to_string(),
+            )
         })?;
 
         let gain_mask = registers::gain_to_reg_mask(self.config.gain)?;
         let sps_mask = registers::sps_to_reg_mask(self.config.sample_rate)?;
-        let active_ch_mask = chip_config.channels.iter().fold(0, |acc, &ch| acc | (1 << ch));
+        let active_ch_mask = chip_config
+            .channels
+            .iter()
+            .fold(0, |acc, &ch| acc | (1 << ch));
         let ch_settings: Vec<(u8, u8)> = (0..8)
             .map(|i| {
                 (
@@ -68,7 +72,7 @@ impl AdcDriver for ElataV1Driver {
                 )
             })
             .collect();
- 
+
         self.inner.initialize_chip(
             CONFIG1_REG | sps_mask,
             CONFIG2_REG,

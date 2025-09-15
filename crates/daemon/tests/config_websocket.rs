@@ -23,21 +23,22 @@ impl TestHarness {
     async fn new() -> Self {
         let driver = Arc::new(tokio::sync::Mutex::new(Box::new(
             MockDriver::new(AdcConfig::default()).unwrap(),
-        ) as Box<dyn AdcDriver + Send>));
- 
+        )
+            as Box<dyn AdcDriver + Send>));
+
         let (config_broker, _) = ConfigBroker::new();
         // Preload initial config so new clients receive an Applied message on connect.
         config_broker
             .broadcast_and_update(Arc::new(AdcConfig::default()))
             .await;
- 
+
         // Set up a minimal data-plane broker and channel required by AppState.
         let (websocket_sender, _) =
             tokio::sync::broadcast::channel::<Arc<eeg_types::comms::pipeline::BrokerMessage>>(1);
         let broker = Arc::new(adc_daemon::websocket_broker::WebSocketBroker::new(
             websocket_sender.subscribe(),
         ));
- 
+
         let app_state = AppState {
             driver: Some(driver.clone()),
             config_broker: Arc::new(config_broker),
@@ -53,7 +54,10 @@ impl TestHarness {
         };
 
         let app = Router::new()
-            .route("/ws/config", get(adc_daemon::config::config_websocket_handler))
+            .route(
+                "/ws/config",
+                get(adc_daemon::config::config_websocket_handler),
+            )
             .with_state(app_state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

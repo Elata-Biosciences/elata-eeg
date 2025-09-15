@@ -1,17 +1,17 @@
 use axum::extract::ws::{Message, WebSocket};
 use dashmap::DashMap;
 use eeg_types::comms::{
-	client::{ClientMessage, ServerMessage, SubscribedAck},
-	pipeline::{BrokerMessage, BrokerPayload},
+    client::{ClientMessage, ServerMessage, SubscribedAck},
+    pipeline::{BrokerMessage, BrokerPayload},
 };
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
-	select,
-	sync::{broadcast, Mutex},
-	time::interval,
+    select,
+    sync::{broadcast, Mutex},
+    time::interval,
 };
 use tracing::{debug, info, warn};
 
@@ -21,9 +21,9 @@ const PING_INTERVAL_S: u64 = 20;
 type TopicRx = broadcast::Receiver<Arc<BrokerMessage>>;
 
 struct TopicState {
-	sender: broadcast::Sender<Arc<BrokerMessage>>,
-	last_meta: Option<Arc<BrokerMessage>>,
-	meta_rev: u32,
+    sender: broadcast::Sender<Arc<BrokerMessage>>,
+    last_meta: Option<Arc<BrokerMessage>>,
+    meta_rev: u32,
 }
 
 pub struct WebSocketBroker {
@@ -80,7 +80,10 @@ impl WebSocketBroker {
                                 }
                             }
                             if topic_state.sender.send(msg.clone()).is_err() {
-                            	debug!("[Broker] No subscribers for topic '{}', message not sent.", topic);
+                                debug!(
+                                    "[Broker] No subscribers for topic '{}', message not sent.",
+                                    topic
+                                );
                             }
                         }
                         // If the topic doesn't exist, we simply drop the message.
@@ -98,7 +101,10 @@ impl WebSocketBroker {
     /// Adds a new client to the broker, creating a dedicated task to manage its lifecycle.
     pub fn add_client(self: Arc<Self>, ws: WebSocket) {
         let client_id = uuid::Uuid::new_v4().to_string();
-        info!("[Client {}] New WebSocket connection established.", client_id);
+        info!(
+            "[Client {}] New WebSocket connection established.",
+            client_id
+        );
         tokio::spawn(async move {
             self.handle_client(ws, client_id).await;
         });

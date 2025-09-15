@@ -1,17 +1,17 @@
 //! A test demonstrating a multi-stage synchronous pipeline.
 
+use eeg_types::SensorMeta;
+use flume::{self as mpsc, Receiver, Sender};
 use pipeline::allocator::{PacketAllocator, RecycledF32Vec};
 use pipeline::config::{StageConfig, SystemConfig};
-use eeg_types::SensorMeta;
+use pipeline::control::PipelineEvent;
 use pipeline::data::{PacketData, PacketHeader, RtPacket};
-use pipeline::control::{PipelineEvent};
 use pipeline::error::StageError;
 use pipeline::executor::Executor;
 use pipeline::graph::PipelineGraph;
 use pipeline::registry::{StageFactory, StageRegistry};
 use pipeline::stage::{Stage, StageContext, StageInitCtx};
 use serde_json::json;
-use flume::{self as mpsc, Receiver, Sender};
 use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -190,8 +190,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Build the pipeline graph
     let (event_tx, _event_rx) = mpsc::unbounded::<PipelineEvent>();
     let test_allocator = Arc::new(PacketAllocator::with_capacity(16, 16, 16, 1024));
-    let graph =
-        PipelineGraph::build(&config, &registry, event_tx, Some(test_allocator.clone()), &None, None)?;
+    let graph = PipelineGraph::build(
+        &config,
+        &registry,
+        event_tx,
+        Some(test_allocator.clone()),
+        &None,
+        None,
+    )?;
 
     // 4. Create and start the executor
     let (executor, _, _control_bus, mut producer_txs) = Executor::new(graph);

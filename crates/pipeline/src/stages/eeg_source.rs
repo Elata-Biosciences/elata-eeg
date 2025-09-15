@@ -88,20 +88,35 @@ impl EegSource {
             return Err(StageError::DriverError(e.to_string()));
         }
         let initial_config = driver_guard.get_config().unwrap();
-        let initial_num_channels: usize =
-            initial_config.chips.iter().map(|chip| chip.channels.len()).sum();
+        let initial_num_channels: usize = initial_config
+            .chips
+            .iter()
+            .map(|chip| chip.channels.len())
+            .sum();
         if initial_num_channels == 0 {
-            return Err(StageError::BadConfig("No channels configured for driver".to_string()));
+            return Err(StageError::BadConfig(
+                "No channels configured for driver".to_string(),
+            ));
         }
-        log::info!("Driver configured with {} total channels", initial_num_channels);
+        log::info!(
+            "Driver configured with {} total channels",
+            initial_num_channels
+        );
 
         let meta_rev_counter = Arc::new(AtomicUsize::new(1));
         let mut initial_sensor_meta =
             create_sensor_meta_from_config(&initial_config, &meta_rev_counter);
 
         // Find the gui_filter config and attach it to the metadata
-        if let Some(gui_filter_config) = init_ctx.system_config.stages.iter().find(|s| s.name == "gui_filter") {
-            if let Ok(filter_params) = serde_json::from_value::<TripleIirConfig>(serde_json::to_value(&gui_filter_config.params)?) {
+        if let Some(gui_filter_config) = init_ctx
+            .system_config
+            .stages
+            .iter()
+            .find(|s| s.name == "gui_filter")
+        {
+            if let Ok(filter_params) = serde_json::from_value::<TripleIirConfig>(
+                serde_json::to_value(&gui_filter_config.params)?,
+            ) {
                 initial_sensor_meta.filter = Some(FilterConfig {
                     high_pass: filter_params.high_pass,
                     low_pass: filter_params.low_pass,
@@ -117,7 +132,9 @@ impl EegSource {
             .is_err()
         {
             log::error!("Failed to send initial source ready event, stopping.");
-            return Err(StageError::SendError("Failed to send initial SourceReady".to_string()));
+            return Err(StageError::SendError(
+                "Failed to send initial SourceReady".to_string(),
+            ));
         }
 
         Ok(Self {
@@ -144,10 +161,7 @@ fn flatten_global_channel_indices(config: &AdcConfig) -> Vec<u8> {
     globals
 }
 
-fn create_sensor_meta_from_config(
-    config: &AdcConfig,
-    meta_rev: &Arc<AtomicUsize>,
-) -> SensorMeta {
+fn create_sensor_meta_from_config(config: &AdcConfig, meta_rev: &Arc<AtomicUsize>) -> SensorMeta {
     let channel_names: Vec<String> = flatten_global_channel_indices(config)
         .into_iter()
         .map(|g| format!("CH{}", g))
@@ -176,11 +190,7 @@ impl Stage for EegSource {
         &self.id
     }
 
-    fn control(
-        &mut self,
-        cmd: &ControlCommand,
-        _ctx: &mut StageContext,
-    ) -> Result<(), StageError> {
+    fn control(&mut self, cmd: &ControlCommand, _ctx: &mut StageContext) -> Result<(), StageError> {
         if let ControlCommand::SetParameter {
             target_stage,
             parameters,
@@ -198,8 +208,11 @@ impl Stage for EegSource {
                             log::info!("Reconfiguring driver...");
                             // Capture old shape for comparison
                             let (shape_before, reconfig_result) = {
-                                let mut driver_guard = futures::executor::block_on(self.driver.lock());
-                                let old_cfg = driver_guard.get_config().unwrap_or_else(|_| new_config.clone());
+                                let mut driver_guard =
+                                    futures::executor::block_on(self.driver.lock());
+                                let old_cfg = driver_guard
+                                    .get_config()
+                                    .unwrap_or_else(|_| new_config.clone());
                                 let before = (
                                     old_cfg.sample_rate,
                                     old_cfg.vref,
@@ -272,7 +285,10 @@ impl Stage for EegSource {
             let mut driver_guard = futures::executor::block_on(self.driver.lock());
             let config = driver_guard.get_config().unwrap();
             let num_channels = config.chips.iter().map(|c| c.channels.len()).sum();
-            let sensor_meta = Arc::new(create_sensor_meta_from_config(&config, &self.meta_rev_counter));
+            let sensor_meta = Arc::new(create_sensor_meta_from_config(
+                &config,
+                &self.meta_rev_counter,
+            ));
             match driver_guard.acquire_batched(self.batch_size, &self.stop_flag) {
                 Ok((s, t, _)) => (s, t, num_channels, sensor_meta),
                 Err(e) => {
@@ -295,7 +311,12 @@ impl Stage for EegSource {
             0
         };
 
-        let output_name = self.outputs.iter().find(|&s| s == "raw_data").cloned().unwrap_or_else(|| "out".to_string());
+        let output_name = self
+            .outputs
+            .iter()
+            .find(|&s| s == "raw_data")
+            .cloned()
+            .unwrap_or_else(|| "out".to_string());
         let packet = Arc::new(RtPacket::RawI32(PacketData {
             header: PacketHeader {
                 source_id: format!("{}.{}", self.id, output_name),

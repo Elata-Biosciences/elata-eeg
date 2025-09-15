@@ -3,7 +3,6 @@
 //! This module is responsible for initializing, running, and managing the
 //! lifecycle of all registered EEG plugins.
 
-
 use pipeline::plugin::EegPlugin;
 use pipeline::stage::Stage;
 

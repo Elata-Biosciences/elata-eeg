@@ -69,10 +69,8 @@ impl Stage for BrainWavesFftPlugin {
                             *sample *= window[i];
                         }
 
-                        let mut buffer: Vec<Complex<f32>> = samples
-                            .into_iter()
-                            .map(|v| Complex::new(v, 0.0))
-                            .collect();
+                        let mut buffer: Vec<Complex<f32>> =
+                            samples.into_iter().map(|v| Complex::new(v, 0.0)).collect();
 
                         self.fft_planner.process(&mut buffer);
                         self.channel_buffers[ch].drain(..FFT_SIZE / 2);

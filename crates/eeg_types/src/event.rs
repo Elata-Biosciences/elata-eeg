@@ -1,11 +1,11 @@
 //! Event system types for the EEG daemon
-//! 
+//!
 //! This module defines the core data structures and events used in the event-driven
 //! architecture. All large data payloads use Arc<[T]> for zero-copy sharing between
 //! plugins while maintaining data integrity through frame IDs.
 
-use std::sync::Arc;
 use bytes::Bytes;
+use std::sync::Arc;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 
@@ -143,7 +143,7 @@ pub enum SensorEvent {
     StartRecording,
     StopRecording,
     QueryRecordingStatus,
-    
+
     /// Recording status feedback
     RecordingStatus {
         is_recording: bool,
@@ -192,9 +192,20 @@ pub fn event_matches_filter(event: &SensorEvent, filter: &EventFilter) -> bool {
         EventFilter::FilteredEegOnly => matches!(event, SensorEvent::FilteredEeg(_)),
         EventFilter::FftOnly => matches!(event, SensorEvent::Fft(_)),
         EventFilter::SystemOnly => matches!(event, SensorEvent::System(_)),
-        EventFilter::RecordingControlOnly => matches!(event, SensorEvent::StartRecording | SensorEvent::StopRecording | SensorEvent::QueryRecordingStatus),
+        EventFilter::RecordingControlOnly => matches!(
+            event,
+            SensorEvent::StartRecording
+                | SensorEvent::StopRecording
+                | SensorEvent::QueryRecordingStatus
+        ),
         EventFilter::RecordingStatusOnly => matches!(event, SensorEvent::RecordingStatus { .. }),
-        EventFilter::RecordingAll => matches!(event, SensorEvent::StartRecording | SensorEvent::StopRecording | SensorEvent::QueryRecordingStatus | SensorEvent::RecordingStatus { .. }),
+        EventFilter::RecordingAll => matches!(
+            event,
+            SensorEvent::StartRecording
+                | SensorEvent::StopRecording
+                | SensorEvent::QueryRecordingStatus
+                | SensorEvent::RecordingStatus { .. }
+        ),
     }
 }
 
@@ -216,7 +227,9 @@ impl SensorEvent {
                     .unwrap_or_default()
                     .as_micros() as u64
             }
-            SensorEvent::StartRecording | SensorEvent::StopRecording | SensorEvent::QueryRecordingStatus => {
+            SensorEvent::StartRecording
+            | SensorEvent::StopRecording
+            | SensorEvent::QueryRecordingStatus => {
                 // Recording control events use current time
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -268,11 +281,11 @@ impl EegPacket {
         if channel >= self.channel_count {
             return None;
         }
-        
+
         let samples_per_channel = self.voltage_samples.len() / self.channel_count;
         let start = channel * samples_per_channel;
         let end = start + samples_per_channel;
-        
+
         self.voltage_samples.get(start..end)
     }
 
@@ -281,11 +294,11 @@ impl EegPacket {
         if channel >= self.channel_count {
             return None;
         }
-        
+
         let samples_per_channel = self.raw_samples.len() / self.channel_count;
         let start = channel * samples_per_channel;
         let end = start + samples_per_channel;
-        
+
         self.raw_samples.get(start..end)
     }
 
@@ -294,14 +307,14 @@ impl EegPacket {
         let mut buffer = Vec::new();
         // Format: [total_samples_u32_le][timestamps_u64_le...][voltage_samples_f32_le...]
         let total_samples = self.voltage_samples.len();
-        
+
         // Ensure timestamps and samples have the same number of items.
         let num_timestamps = self.timestamps.len();
 
         if num_timestamps != total_samples {
             let effective_len = std::cmp::min(num_timestamps, total_samples);
             buffer.extend_from_slice(&(effective_len as u32).to_le_bytes());
-            
+
             for &ts in self.timestamps.iter().take(effective_len) {
                 buffer.extend_from_slice(&ts.to_le_bytes());
             }
@@ -344,11 +357,11 @@ impl FilteredEegPacket {
         if channel >= self.channel_count {
             return None;
         }
-        
+
         let samples_per_channel = self.samples.len() / self.channel_count;
         let start = channel * samples_per_channel;
         let end = start + samples_per_channel;
-        
+
         self.samples.get(start..end)
     }
 
@@ -358,7 +371,7 @@ impl FilteredEegPacket {
         let mut buffer = Vec::new();
         // Format: [total_samples_u32_le][timestamps_u64_le...][samples_f32_le...]
         let total_samples = self.samples.len();
-        
+
         // Ensure timestamps and samples have the same number of items per channel.
         // The number of timestamps should equal the total number of samples.
         let num_timestamps = self.timestamps.len();
@@ -368,7 +381,7 @@ impl FilteredEegPacket {
             // and sending a truncated packet, but this should ideally not happen.
             let effective_len = std::cmp::min(num_timestamps, total_samples);
             buffer.extend_from_slice(&(effective_len as u32).to_le_bytes());
-            
+
             for &ts in self.timestamps.iter().take(effective_len) {
                 buffer.extend_from_slice(&ts.to_le_bytes());
             }
@@ -435,8 +448,15 @@ mod tests {
         let voltage_samples = vec![1.0, 2.0, 3.0, 4.0]; // 2 channels, 2 samples each
         let raw_samples = vec![10, 20, 30, 40];
         let timestamps = vec![1000, 1002, 1000, 1002];
-        let packet = EegPacket::new(timestamps.clone(), 1, raw_samples.clone(), voltage_samples.clone(), 2, 250.0);
-        
+        let packet = EegPacket::new(
+            timestamps.clone(),
+            1,
+            raw_samples.clone(),
+            voltage_samples.clone(),
+            2,
+            250.0,
+        );
+
         assert_eq!(packet.timestamps.as_ref(), timestamps.as_slice());
         assert_eq!(packet.frame_id, 1);
         assert_eq!(packet.channel_count, 2);
@@ -451,12 +471,21 @@ mod tests {
         let raw_samples = vec![10, 20, 30, 40, 50, 60];
         let timestamps = vec![1000, 1002, 1000, 1002, 1000, 1002];
         let packet = EegPacket::new(timestamps, 1, raw_samples, voltage_samples, 3, 250.0);
-        
-        assert_eq!(packet.channel_voltage_samples(0), Some([1.0, 2.0].as_slice()));
-        assert_eq!(packet.channel_voltage_samples(1), Some([3.0, 4.0].as_slice()));
-        assert_eq!(packet.channel_voltage_samples(2), Some([5.0, 6.0].as_slice()));
+
+        assert_eq!(
+            packet.channel_voltage_samples(0),
+            Some([1.0, 2.0].as_slice())
+        );
+        assert_eq!(
+            packet.channel_voltage_samples(1),
+            Some([3.0, 4.0].as_slice())
+        );
+        assert_eq!(
+            packet.channel_voltage_samples(2),
+            Some([5.0, 6.0].as_slice())
+        );
         assert_eq!(packet.channel_voltage_samples(3), None);
-        
+
         assert_eq!(packet.channel_raw_samples(0), Some([10, 20].as_slice()));
         assert_eq!(packet.channel_raw_samples(1), Some([30, 40].as_slice()));
         assert_eq!(packet.channel_raw_samples(2), Some([50, 60].as_slice()));
@@ -466,19 +495,26 @@ mod tests {
     #[test]
     fn test_sensor_event_timestamp() {
         let timestamps = vec![1000, 1002];
-        let eeg_packet = Arc::new(EegPacket::new(timestamps, 1, vec![10, 20], vec![1.0, 2.0], 1, 250.0));
+        let eeg_packet = Arc::new(EegPacket::new(
+            timestamps,
+            1,
+            vec![10, 20],
+            vec![1.0, 2.0],
+            1,
+            250.0,
+        ));
         let event = SensorEvent::RawEeg(eeg_packet);
-        
+
         assert_eq!(event.timestamp(), 1000); // Should return the first timestamp
         assert_eq!(event.event_type_name(), "RawEeg");
-        
+
         // Test recording events
         let start_event = SensorEvent::StartRecording;
         assert_eq!(start_event.event_type_name(), "StartRecording");
-        
+
         let stop_event = SensorEvent::StopRecording;
         assert_eq!(stop_event.event_type_name(), "StopRecording");
-        
+
         let status_event = SensorEvent::RecordingStatus {
             is_recording: true,
             file_path: Some("test.csv".to_string()),
@@ -500,31 +536,76 @@ mod tests {
             message: "Recording started".to_string(),
             timestamp: 12345,
         };
-        
+
         // Test RecordingControlOnly filter
-        assert!(event_matches_filter(&start_event, &EventFilter::RecordingControlOnly));
-        assert!(event_matches_filter(&stop_event, &EventFilter::RecordingControlOnly));
-        assert!(event_matches_filter(&query_event, &EventFilter::RecordingControlOnly));
-        assert!(!event_matches_filter(&status_event, &EventFilter::RecordingControlOnly));
-        
+        assert!(event_matches_filter(
+            &start_event,
+            &EventFilter::RecordingControlOnly
+        ));
+        assert!(event_matches_filter(
+            &stop_event,
+            &EventFilter::RecordingControlOnly
+        ));
+        assert!(event_matches_filter(
+            &query_event,
+            &EventFilter::RecordingControlOnly
+        ));
+        assert!(!event_matches_filter(
+            &status_event,
+            &EventFilter::RecordingControlOnly
+        ));
+
         // Test RecordingStatusOnly filter
-        assert!(!event_matches_filter(&start_event, &EventFilter::RecordingStatusOnly));
-        assert!(!event_matches_filter(&stop_event, &EventFilter::RecordingStatusOnly));
-        assert!(!event_matches_filter(&query_event, &EventFilter::RecordingStatusOnly));
-        assert!(event_matches_filter(&status_event, &EventFilter::RecordingStatusOnly));
-        
+        assert!(!event_matches_filter(
+            &start_event,
+            &EventFilter::RecordingStatusOnly
+        ));
+        assert!(!event_matches_filter(
+            &stop_event,
+            &EventFilter::RecordingStatusOnly
+        ));
+        assert!(!event_matches_filter(
+            &query_event,
+            &EventFilter::RecordingStatusOnly
+        ));
+        assert!(event_matches_filter(
+            &status_event,
+            &EventFilter::RecordingStatusOnly
+        ));
+
         // Test RecordingAll filter
-        assert!(event_matches_filter(&start_event, &EventFilter::RecordingAll));
-        assert!(event_matches_filter(&stop_event, &EventFilter::RecordingAll));
-        assert!(event_matches_filter(&query_event, &EventFilter::RecordingAll));
-        assert!(event_matches_filter(&status_event, &EventFilter::RecordingAll));
-        
+        assert!(event_matches_filter(
+            &start_event,
+            &EventFilter::RecordingAll
+        ));
+        assert!(event_matches_filter(
+            &stop_event,
+            &EventFilter::RecordingAll
+        ));
+        assert!(event_matches_filter(
+            &query_event,
+            &EventFilter::RecordingAll
+        ));
+        assert!(event_matches_filter(
+            &status_event,
+            &EventFilter::RecordingAll
+        ));
+
         // Test that recording events don't match other filters
-        assert!(!event_matches_filter(&start_event, &EventFilter::RawEegOnly));
+        assert!(!event_matches_filter(
+            &start_event,
+            &EventFilter::RawEegOnly
+        ));
         assert!(!event_matches_filter(&stop_event, &EventFilter::FftOnly));
-        assert!(!event_matches_filter(&query_event, &EventFilter::SystemOnly));
-        assert!(!event_matches_filter(&status_event, &EventFilter::SystemOnly));
-        
+        assert!(!event_matches_filter(
+            &query_event,
+            &EventFilter::SystemOnly
+        ));
+        assert!(!event_matches_filter(
+            &status_event,
+            &EventFilter::SystemOnly
+        ));
+
         // Test that All filter matches recording events
         assert!(event_matches_filter(&start_event, &EventFilter::All));
         assert!(event_matches_filter(&stop_event, &EventFilter::All));

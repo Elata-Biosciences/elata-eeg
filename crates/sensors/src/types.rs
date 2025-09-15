@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use eeg_types::SensorError as EegSensorError;
 
 /// Configuration for ADC/sensor drivers
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChipConfig {
@@ -19,8 +19,12 @@ pub struct ChipConfig {
     pub cs_pin: u8,
 }
 
-fn default_spi_bus() -> u8 { 0 }
-fn default_cs_pin() -> u8 { 0 }
+fn default_spi_bus() -> u8 {
+    0
+}
+fn default_cs_pin() -> u8 {
+    0
+}
 
 impl Default for ChipConfig {
     fn default() -> Self {
@@ -48,7 +52,9 @@ pub struct AdcConfig {
     pub chips: Vec<ChipConfig>,
 }
 
-fn default_drdy_pin() -> u8 { 25 }
+fn default_drdy_pin() -> u8 {
+    25
+}
 
 impl Default for AdcConfig {
     fn default() -> Self {
@@ -76,7 +82,6 @@ pub enum DriverStatus {
     /// Driver encountered an error
     Error(String),
 }
-
 
 /// Errors that can occur in sensor drivers
 use thiserror::Error;
@@ -163,7 +168,6 @@ pub trait AdcDriver: Send + Sync + 'static {
     /// Shutdown the driver and clean up resources
     fn shutdown(&mut self) -> Result<(), DriverError>;
 }
-
 
 impl From<rppal::spi::Error> for DriverError {
     fn from(err: rppal::spi::Error) -> Self {

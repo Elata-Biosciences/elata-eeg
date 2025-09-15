@@ -71,20 +71,26 @@ impl ElataV2BoardConfig {
             CsPinAssignment::Default => {
                 match chip_index {
                     0 => Ok(8), // BCM 8 is hardware CE0
-                    _ => Err(format!("Default Elata V2 config only supports 1 chip, but chip {} was requested", chip_index)),
+                    _ => Err(format!(
+                        "Default Elata V2 config only supports 1 chip, but chip {} was requested",
+                        chip_index
+                    )),
                 }
-            },
-            CsPinAssignment::Explicit(pins) => {
-                pins.get(chip_index)
-                    .copied()
-                    .ok_or_else(|| format!("No CS pin defined for chip {}", chip_index))
             }
+            CsPinAssignment::Explicit(pins) => pins
+                .get(chip_index)
+                .copied()
+                .ok_or_else(|| format!("No CS pin defined for chip {}", chip_index)),
         }
     }
 
     /// Check if bias should be enabled for a specific chip
     pub fn is_bias_enabled(&self, chip_index: usize) -> bool {
-        self.register_config.bias_per_chip.get(chip_index).copied().unwrap_or(false)
+        self.register_config
+            .bias_per_chip
+            .get(chip_index)
+            .copied()
+            .unwrap_or(false)
     }
 }
 

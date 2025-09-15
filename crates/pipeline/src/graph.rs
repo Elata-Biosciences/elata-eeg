@@ -11,8 +11,8 @@ use eeg_types::comms::BrokerMessage;
 use flume::Receiver;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::broadcast;
+use tokio::sync::Mutex;
 
 use sensors::types::AdcDriver;
 
@@ -73,8 +73,8 @@ impl PipelineGraph {
         websocket_sender: Option<broadcast::Sender<Arc<BrokerMessage>>>,
     ) -> Result<Self, StageError> {
         let mut nodes = HashMap::new();
-        let allocator = allocator
-            .unwrap_or_else(|| Arc::new(PacketAllocator::with_capacity(16, 16, 16, 1024)));
+        let allocator =
+            allocator.unwrap_or_else(|| Arc::new(PacketAllocator::with_capacity(16, 16, 16, 1024)));
 
         for stage_config in &config.stages {
             if nodes.contains_key(&stage_config.name) {
@@ -92,7 +92,6 @@ impl PipelineGraph {
                 .and_then(|d| d.get("sample_rate"))
                 .and_then(|sr| sr.as_f64())
                 .unwrap_or(250.0);
-
 
             let init_ctx = crate::stage::StageInitCtx {
                 event_tx: &event_tx,
@@ -143,7 +142,10 @@ impl PipelineGraph {
             }
             // For stages without explicit outputs, assume a default output stream named "out".
             if stage_config.outputs.is_empty() {
-                available_outputs.insert(format!("{}.out", stage_config.name), stage_config.name.clone());
+                available_outputs.insert(
+                    format!("{}.out", stage_config.name),
+                    stage_config.name.clone(),
+                );
             }
         }
 
@@ -170,9 +172,11 @@ impl PipelineGraph {
         })
     }
 
-
     /// Forwards a control command to all stages in the graph.
-    pub async fn handle_control_command(&mut self, cmd: &ControlCommand) -> Result<(), PipelineError> {
+    pub async fn handle_control_command(
+        &mut self,
+        cmd: &ControlCommand,
+    ) -> Result<(), PipelineError> {
         match cmd {
             ControlCommand::Reconfigure(new_config) => {
                 self.topo_dirty = true;
@@ -188,26 +192,37 @@ impl PipelineGraph {
                             .reconfigure(&params_value, &mut self.context)?;
                     }
                 }
-                
+
                 // Emit a ConfigUpdated event
-                if let Err(e) = self.context.event_tx.send(crate::control::PipelineEvent::ConfigUpdated {
-                    config: new_config.clone(),
-                }) {
+                if let Err(e) =
+                    self.context
+                        .event_tx
+                        .send(crate::control::PipelineEvent::ConfigUpdated {
+                            config: new_config.clone(),
+                        })
+                {
                     tracing::error!("Failed to send ConfigUpdated event: {}", e);
                 }
             }
-            ControlCommand::SetParameter { target_stage, parameters } => {
+            ControlCommand::SetParameter {
+                target_stage,
+                parameters,
+            } => {
                 // Forward the command to the target stage
                 if let Some(node) = self.nodes.get_mut(target_stage) {
                     node.stage.lock().await.control(cmd, &mut self.context)?;
-                    
+
                     // Emit a ParameterChanged event
-                    for (param_id, value) in parameters.as_object().unwrap_or(&serde_json::Map::new()) {
-                        if let Err(e) = self.context.event_tx.send(crate::control::PipelineEvent::ParameterChanged {
-                            stage_id: target_stage.clone(),
-                            parameter_id: param_id.clone(),
-                            value: value.clone(),
-                        }) {
+                    for (param_id, value) in
+                        parameters.as_object().unwrap_or(&serde_json::Map::new())
+                    {
+                        if let Err(e) = self.context.event_tx.send(
+                            crate::control::PipelineEvent::ParameterChanged {
+                                stage_id: target_stage.clone(),
+                                parameter_id: param_id.clone(),
+                                value: value.clone(),
+                            },
+                        ) {
                             tracing::error!("Failed to send ParameterChanged event: {}", e);
                         }
                     }
@@ -216,11 +231,15 @@ impl PipelineGraph {
             ControlCommand::Start => {
                 for node in self.nodes.values_mut() {
                     node.stage.lock().await.control(cmd, &mut self.context)?;
-                    
+
                     // Emit a StageStarted event
-                    if let Err(e) = self.context.event_tx.send(crate::control::PipelineEvent::StageStarted {
-                        stage_id: node.name.clone(),
-                    }) {
+                    if let Err(e) =
+                        self.context
+                            .event_tx
+                            .send(crate::control::PipelineEvent::StageStarted {
+                                stage_id: node.name.clone(),
+                            })
+                    {
                         tracing::error!("Failed to send StageStarted event: {}", e);
                     }
                 }
@@ -228,11 +247,15 @@ impl PipelineGraph {
             ControlCommand::Shutdown => {
                 for node in self.nodes.values_mut() {
                     node.stage.lock().await.control(cmd, &mut self.context)?;
-                    
+
                     // Emit a StageStopped event
-                    if let Err(e) = self.context.event_tx.send(crate::control::PipelineEvent::StageStopped {
-                        stage_id: node.name.clone(),
-                    }) {
+                    if let Err(e) =
+                        self.context
+                            .event_tx
+                            .send(crate::control::PipelineEvent::StageStopped {
+                                stage_id: node.name.clone(),
+                            })
+                    {
                         tracing::error!("Failed to send StageStopped event: {}", e);
                     }
                 }
@@ -269,5 +292,4 @@ impl PipelineGraph {
     pub fn get_current_config(&self) -> SystemConfig {
         self.config.clone()
     }
-
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
-use pipeline::stage::{Stage, StageContext};
-use pipeline::data::{RtPacket, PacketData};
+use pipeline::data::{PacketData, RtPacket};
 use pipeline::error::StageError;
+use pipeline::stage::{Stage, StageContext};
 use std::sync::Arc;
 use uuid::Uuid;
 

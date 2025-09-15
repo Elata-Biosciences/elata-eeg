@@ -6,33 +6,30 @@ use axum::{
     Router,
 };
 use eeg_types::comms::{
-	client::{ClientMessage, ServerMessage, SubscribedAck},
-	pipeline::BrokerMessage,
+    client::{ClientMessage, ServerMessage, SubscribedAck},
+    pipeline::BrokerMessage,
 };
+use flume::Receiver;
 use futures_util::{SinkExt, StreamExt};
+use lazy_static::lazy_static;
 use pipeline::{
     config::{StageConfig, SystemConfig},
     control::{ControlCommand, PipelineEvent},
+    data::RtPacket,
     error::StageError,
     executor::Executor,
     graph::PipelineGraph,
     registry::{StageFactory, StageRegistry},
     stage::{Stage, StageInitCtx},
-    data::RtPacket,
 };
 use serde_json::json;
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{net::TcpListener, sync::broadcast};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use flume::Receiver;
-use lazy_static::lazy_static;
 
 lazy_static! {
-    static ref STATEFUL_TEST_STAGE_TX: std::sync::Mutex<Option<flume::Sender<Arc<RtPacket>>>> = std::sync::Mutex::new(None);
+    static ref STATEFUL_TEST_STAGE_TX: std::sync::Mutex<Option<flume::Sender<Arc<RtPacket>>>> =
+        std::sync::Mutex::new(None);
 }
 
 // A simple pass-through stage for testing control-plane functionality.
@@ -90,7 +87,6 @@ impl StageFactory for StatefulTestStageFactory {
         Ok((Box::new(StatefulTestStage::new(&config.name)), Some(rx)))
     }
 }
-
 
 // A simple sink stage that does nothing.
 struct TestSink;
@@ -196,15 +192,20 @@ async fn test_full_stack_command_and_shutdown() {
     // 2. Send command to change state
     let cmd = ControlCommand::SetTestState(42);
     control_bus.send_all(cmd);
-   
-       // 2a. Send a dummy packet to unblock the producer stage so it can process the control command.
-       let dummy_packet = Arc::new(RtPacket::Voltage(eeg_types::data::PacketData {
-           header: Default::default(),
-           samples: (vec![], Default::default()).into(),
-       }));
-       STATEFUL_TEST_STAGE_TX.lock().unwrap().as_ref().unwrap().send(dummy_packet).unwrap();
-       tokio::time::sleep(Duration::from_millis(100)).await;
 
+    // 2a. Send a dummy packet to unblock the producer stage so it can process the control command.
+    let dummy_packet = Arc::new(RtPacket::Voltage(eeg_types::data::PacketData {
+        header: Default::default(),
+        samples: (vec![], Default::default()).into(),
+    }));
+    STATEFUL_TEST_STAGE_TX
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .send(dummy_packet)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 3. Verify the pipeline emits the correct event
     let event = event_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -237,29 +238,39 @@ async fn test_broker_closes_connection_on_invalid_payload() {
         .expect("Failed to connect");
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    let subscribe_msg = ClientMessage::Subscribe { topic: topic.clone(), epoch: 1 };
+    let subscribe_msg = ClientMessage::Subscribe {
+        topic: topic.clone(),
+        epoch: 1,
+    };
     ws_tx
-        .send(Message::Text(serde_json::to_string(&subscribe_msg).unwrap()))
+        .send(Message::Text(
+            serde_json::to_string(&subscribe_msg).unwrap(),
+        ))
         .await
         .unwrap();
 
     // 4. Wait for subscription ACK
-    let ack_msg = ws_rx.next().await.expect("Server closed connection before sending ACK").expect("Error receiving ACK");
-    assert!(matches!(ack_msg, Message::Text(_)), "Expected Text message for ACK");
-    let ack: ServerMessage = serde_json::from_str(ack_msg.to_text().unwrap()).expect("Failed to parse ACK message");
+    let ack_msg = ws_rx
+        .next()
+        .await
+        .expect("Server closed connection before sending ACK")
+        .expect("Error receiving ACK");
+    assert!(
+        matches!(ack_msg, Message::Text(_)),
+        "Expected Text message for ACK"
+    );
+    let ack: ServerMessage =
+        serde_json::from_str(ack_msg.to_text().unwrap()).expect("Failed to parse ACK message");
     assert_eq!(
-    	ack,
-    	ServerMessage::Subscribed(SubscribedAck {
-    		topic: topic.clone(),
-    		meta_rev: None
-    	})
+        ack,
+        ServerMessage::Subscribed(SubscribedAck {
+            topic: topic.clone(),
+            meta_rev: None
+        })
     );
 
     // 5. Send a malicious binary payload from the client
-    ws_tx
-        .send(Message::Binary(vec![0, 1, 2, 3]))
-        .await
-        .unwrap();
+    ws_tx.send(Message::Binary(vec![0, 1, 2, 3])).await.unwrap();
 
     // 6. Verify the connection is closed
     loop {
@@ -300,22 +311,35 @@ async fn test_broker_closes_connection_on_malformed_json() {
         .expect("Failed to connect");
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-    let subscribe_msg = ClientMessage::Subscribe { topic: topic.clone(), epoch: 1 };
+    let subscribe_msg = ClientMessage::Subscribe {
+        topic: topic.clone(),
+        epoch: 1,
+    };
     ws_tx
-        .send(Message::Text(serde_json::to_string(&subscribe_msg).unwrap()))
+        .send(Message::Text(
+            serde_json::to_string(&subscribe_msg).unwrap(),
+        ))
         .await
         .unwrap();
 
     // 4. Wait for subscription ACK
-    let ack_msg = ws_rx.next().await.expect("Server closed connection before sending ACK").expect("Error receiving ACK");
-    assert!(matches!(ack_msg, Message::Text(_)), "Expected Text message for ACK");
-    let ack: ServerMessage = serde_json::from_str(ack_msg.to_text().unwrap()).expect("Failed to parse ACK message");
+    let ack_msg = ws_rx
+        .next()
+        .await
+        .expect("Server closed connection before sending ACK")
+        .expect("Error receiving ACK");
+    assert!(
+        matches!(ack_msg, Message::Text(_)),
+        "Expected Text message for ACK"
+    );
+    let ack: ServerMessage =
+        serde_json::from_str(ack_msg.to_text().unwrap()).expect("Failed to parse ACK message");
     assert_eq!(
-    	ack,
-    	ServerMessage::Subscribed(SubscribedAck {
-    		topic: topic.clone(),
-    		meta_rev: None
-    	})
+        ack,
+        ServerMessage::Subscribed(SubscribedAck {
+            topic: topic.clone(),
+            meta_rev: None
+        })
     );
 
     // 5. Send a malformed JSON payload from the client

@@ -4,18 +4,18 @@
 //! replacing the event-bus-based plugin system with explicit pipeline stages and
 //! data flow contracts.
 pub mod allocator;
-pub mod data;
-pub mod stage;
-pub mod control;
-pub mod graph;
-pub mod config;
-pub mod executor;
-pub mod stages;
-pub mod error;
-pub mod registry;
-pub mod plugin;
 pub mod bridge;
+pub mod config;
+pub mod control;
 pub mod daemon_protocol;
+pub mod data;
+pub mod error;
+pub mod executor;
+pub mod graph;
+pub mod plugin;
+pub mod registry;
+pub mod stage;
+pub mod stages;
 #[macro_use]
 pub mod macros;
 
@@ -24,11 +24,11 @@ mod tests;
 
 // Re-export commonly used types
 pub use allocator::*;
+pub use bridge::*;
 pub use control::*;
 pub use data::*;
+pub use error::*;
+pub use plugin::*;
+pub use registry::*;
 pub use stage::*;
 pub use stages::*;
-pub use error::*;
-pub use registry::*;
-pub use plugin::*;
-pub use bridge::*;

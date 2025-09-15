@@ -1,23 +1,27 @@
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use eeg_types::SensorError;
 use flume::Receiver;
 use log::{error, info, warn};
 use rppal::gpio::{Gpio, InputPin, OutputPin, Trigger};
 use rppal::spi::{Bus, Mode};
-use thread_priority::ThreadPriority;
-use eeg_types::SensorError;
 use sensors::{
-    ads1299::registers::{
-        self, CH1SET_ADDR, CHN_REG, CMD_RDATAC, CMD_SDATAC, CMD_STANDBY, CMD_WAKEUP, CONFIG1_REG,
-        CONFIG2_REG, CONFIG3_REG, CONFIG4_REG, LOFF_SESP_REG, MISC1_REG, DAISY_DISABLE,
-    BIASREF_INT , PD_BIAS, PD_REFBUF, BIAS_SENS_OFF_MASK, SRB1, MUX_NORMAL, POWER_OFF_CH},
-    spi_bus::SpiBus,
     AdcConfig, AdcDriver, DriverError, DriverStatus,
     ads1299::driver::Ads1299Driver,
+    ads1299::registers::{
+        self, BIAS_SENS_OFF_MASK, BIASREF_INT, CH1SET_ADDR, CHN_REG, CMD_RDATAC, CMD_SDATAC,
+        CMD_STANDBY, CMD_WAKEUP, CONFIG1_REG, CONFIG2_REG, CONFIG3_REG, CONFIG4_REG, DAISY_DISABLE,
+        LOFF_SESP_REG, MISC1_REG, MUX_NORMAL, PD_BIAS, PD_REFBUF, POWER_OFF_CH, SRB1,
+    },
+    spi_bus::SpiBus,
 };
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thread_priority::ThreadPriority;
 
-use crate::elata_v2::board::{ElataV2BoardConfig, CsPinAssignment, RegisterConfig};
+use crate::elata_v2::board::{CsPinAssignment, ElataV2BoardConfig, RegisterConfig};
 pub struct ElataV2Driver {
     chip_drivers: Vec<Ads1299Driver>,
     gpio: Arc<Gpio>,
@@ -36,14 +40,11 @@ impl ElataV2Driver {
         let gpio = Arc::new(Gpio::new()?);
         info!("GPIO initialized.");
         let mut chip_drivers = Vec::with_capacity(config.chips.len());
-        let bus = Arc::new(SpiBus::new(
-            Bus::Spi0,
-            1_000_000,
-            Mode::Mode1,
-        )?);
+        let bus = Arc::new(SpiBus::new(Bus::Spi0, 1_000_000, Mode::Mode1)?);
         info!("SPI bus initialized.");
         for (i, chip_config) in config.chips.iter().enumerate() {
-            let cs_pin_num = board_config.get_cs_pin(i)
+            let cs_pin_num = board_config
+                .get_cs_pin(i)
                 .map_err(DriverError::ConfigurationError)?;
 
             let mut cs_pin = gpio.get(cs_pin_num)?.into_output();
@@ -70,7 +71,7 @@ impl ElataV2Driver {
             drdy_tx: None, // Initialize as None
         })
     }
-    
+
     /// Create a new driver with default board configuration
     /// This maintains backward compatibility with existing code
     pub fn with_default_board(config: AdcConfig) -> Result<Self, DriverError> {
@@ -81,11 +82,20 @@ impl AdcDriver for ElataV2Driver {
     fn initialize(&mut self) -> Result<(), DriverError> {
         // Ensure a fresh start for the acquisition thread
         self.stop_acq_thread.store(false, Ordering::Relaxed);
-        
-        info!("Initializing ElataV2 board with {} chips...", self.config.chips.len());
+
+        info!(
+            "Initializing ElataV2 board with {} chips...",
+            self.config.chips.len()
+        );
         // This board uses a single DRDY GPIO sourced from chip 0 by wiring convention.
         // If chip 0 has no active channels, DRDY will not toggle and acquisition will stall.
-        if self.config.chips.get(0).map(|c| c.channels.is_empty()).unwrap_or(true) {
+        if self
+            .config
+            .chips
+            .get(0)
+            .map(|c| c.channels.is_empty())
+            .unwrap_or(true)
+        {
             return Err(DriverError::ConfigurationError(
                 "Chip 0 has no active channels, but DRDY is sourced from chip 0. Enable at least one channel on chip 0 or rewire DRDY to the active chip.".to_string(),
             ));
@@ -96,7 +106,11 @@ impl AdcDriver for ElataV2Driver {
             let chip_info = &self.config.chips[i];
             let gain_mask = registers::gain_to_reg_mask(self.config.gain)?;
             let sps_mask = registers::sps_to_reg_mask(self.config.sample_rate)?;
-            let pd_bias = if self.board_config.is_bias_enabled(i) { PD_BIAS } else { 0x00 };
+            let pd_bias = if self.board_config.is_bias_enabled(i) {
+                PD_BIAS
+            } else {
+                0x00
+            };
             let ch_settings: Vec<(u8, u8)> = (0..8)
                 .map(|ch_idx| {
                     let setting = if chip_info.channels.contains(&ch_idx) {
@@ -107,18 +121,24 @@ impl AdcDriver for ElataV2Driver {
                     (CH1SET_ADDR + ch_idx, setting)
                 })
                 .collect();
-            let active_ch_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
+            let active_ch_mask = chip_info
+                .channels
+                .iter()
+                .fold(0, |acc, &ch| acc | (1 << (ch % 8)));
             // Configure registers based on board configuration
             let config1_value = if self.board_config.register_config.daisy_chain {
                 CONFIG1_REG | sps_mask
-            } else{
+            } else {
                 CONFIG1_REG | sps_mask | DAISY_DISABLE
             };
-            
+
             // The BIAS_SENSP register is a bitmask of active channels for the bias derivation.
             // We calculate it directly from the channels configured in the pipeline.
-            let bias_sens_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
-            
+            let bias_sens_mask = chip_info
+                .channels
+                .iter()
+                .fold(0, |acc, &ch| acc | (1 << (ch % 8)));
+
             chip.initialize_chip(
                 config1_value,
                 CONFIG2_REG,
@@ -128,12 +148,19 @@ impl AdcDriver for ElataV2Driver {
                 MISC1_REG | SRB1,
                 &ch_settings,
                 active_ch_mask,
-                bias_sens_mask
+                bias_sens_mask,
             )?;
             if chip_info.channels.is_empty() {
-                info!("Chip {} initialized with 0 channels; will remain in standby and be skipped during acquisition.", i);
+                info!(
+                    "Chip {} initialized with 0 channels; will remain in standby and be skipped during acquisition.",
+                    i
+                );
             } else {
-                info!("Chip {} initialized and ready with {} active channel(s).", i, chip_info.channels.len());
+                info!(
+                    "Chip {} initialized and ready with {} active channel(s).",
+                    i,
+                    chip_info.channels.len()
+                );
             }
         }
         thread::sleep(Duration::from_millis(10));
@@ -147,7 +174,7 @@ impl AdcDriver for ElataV2Driver {
             self.config.drdy_pin,
             if initial_state { "HIGH" } else { "LOW" }
         );
-        
+
         let drdy_tx_clone = drdy_tx.clone();
         drdy_pin.set_async_interrupt(Trigger::FallingEdge, None, move |_| {
             let _ = drdy_tx_clone.send(());
@@ -157,7 +184,7 @@ impl AdcDriver for ElataV2Driver {
             self.config.drdy_pin
         );
         *self.drdy_pin.lock().unwrap() = Some(drdy_pin);
-        
+
         // Store the drdy_tx to keep the channel alive
         self.drdy_tx = Some(drdy_tx);
         // 3. Spawn the acquisition thread
@@ -235,20 +262,20 @@ impl AdcDriver for ElataV2Driver {
         let mut start_pin = self.gpio.get(self.board_config.start_pin)?.into_output();
         start_pin.set_high();
         thread::sleep(Duration::from_millis(1));
-        
+
         // 5. Send RDATAC only to chips with active channels
         for (i, chip) in self.chip_drivers.iter_mut().enumerate() {
             // Wake up all chips first
             chip.send_command(CMD_WAKEUP)?;
             thread::sleep(Duration::from_millis(10));
-            
+
             // Only send RDATAC to chips with active channels
             if !self.config.chips[i].channels.is_empty() {
                 chip.send_command(CMD_RDATAC)?;
                 thread::sleep(Duration::from_millis(1));
             }
         }
-        
+
         *self.start_pin.lock().unwrap() = Some(start_pin);
         info!("ElataV2 board initialized successfully and is acquiring data.");
         Ok(())
@@ -278,7 +305,10 @@ impl AdcDriver for ElataV2Driver {
                     batch_buffer.extend(frame);
                 }
                 Err(flume::RecvTimeoutError::Timeout) => {
-                    warn!("[Batch {}] Sample channel timeout. No data received from acquisition thread in 1000ms.", i);
+                    warn!(
+                        "[Batch {}] Sample channel timeout. No data received from acquisition thread in 1000ms.",
+                        i
+                    );
                     // This might indicate a problem with the acquisition thread
                     continue;
                 }
@@ -310,16 +340,14 @@ impl AdcDriver for ElataV2Driver {
         info!("ElataV2 reconfigure: performing full shutdown + reinitialize");
         // Stop acquisition thread, clear IRQs and pins, and power down chips
         self.shutdown()?;
-        
+
         // Recreate chip drivers with new configuration
         self.chip_drivers.clear();
-        let bus = Arc::new(SpiBus::new(
-            Bus::Spi0,
-            1_000_000,
-            Mode::Mode1,
-        )?);
+        let bus = Arc::new(SpiBus::new(Bus::Spi0, 1_000_000, Mode::Mode1)?);
         for (i, chip_config) in config.chips.iter().enumerate() {
-            let cs_pin_num = self.board_config.get_cs_pin(i)
+            let cs_pin_num = self
+                .board_config
+                .get_cs_pin(i)
                 .map_err(DriverError::ConfigurationError)?;
 
             let mut cs_pin = self.gpio.get(cs_pin_num)?.into_output();
@@ -329,22 +357,22 @@ impl AdcDriver for ElataV2Driver {
             let driver = Ads1299Driver::new(chip_config.clone(), bus.clone(), cs_pin)?;
             self.chip_drivers.push(driver);
         }
-        
+
         // Update runtime configuration
         self.config = config.clone();
-        
+
         // Re-run the known-good board-level initialization sequence
         self.initialize()
     }
     fn shutdown(&mut self) -> Result<(), DriverError> {
         info!("Shutting down ElataV2 board...");
-        
+
         // 1. Signal the acquisition thread to stop
         self.stop_acq_thread.store(true, Ordering::Relaxed);
-        
+
         // 2. Drop the DRDY channel to disconnect it cleanly
         self.drdy_tx = None;
-        
+
         // 3. Wait for the acquisition thread to finish
         if let Some(handle) = self.acq_thread_handle.take() {
             info!("Waiting for acquisition thread to join...");

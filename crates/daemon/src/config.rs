@@ -103,7 +103,7 @@ pub async fn config_websocket_handler(
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, receiver) = socket.split();
-    
+
     // Send the initial configuration state on connect, if we have it.
     let latest_config_guard = state.config_broker.latest_config.lock().await;
     if let Some(config) = &*latest_config_guard {
@@ -153,7 +153,10 @@ async fn process_incoming_messages(mut receiver: SplitStream<WebSocket>, state: 
                             // TODO: Send a `Rejected` message back to the proposing client specifically.
                         } else {
                             info!("Successfully applied new config.");
-                            state.config_broker.broadcast_and_update(Arc::new(new_config)).await;
+                            state
+                                .config_broker
+                                .broadcast_and_update(Arc::new(new_config))
+                                .await;
                         }
                     } else {
                         warn!("Config proposal received, but no driver is available. Rejecting.");

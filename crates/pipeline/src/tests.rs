@@ -1,8 +1,8 @@
 //! Integration tests for the pipeline.
 
 use crate::config::SystemConfig;
-use crate::stages::register_builtin_stages;
 use crate::registry::StageRegistry;
+use crate::stages::register_builtin_stages;
 use std::sync::Arc;
 
 use crate::control::PipelineEvent;
@@ -47,7 +47,8 @@ fn test_full_static_pipeline() {
 
     // 4. Build the graph
     let graph =
-        crate::graph::PipelineGraph::build(&config, &registry, event_tx.clone(), None, &None, None).unwrap();
+        crate::graph::PipelineGraph::build(&config, &registry, event_tx.clone(), None, &None, None)
+            .unwrap();
 
     // 5. Run the pipeline in a separate task
     let (executor, _, _, _) = Executor::new(graph);

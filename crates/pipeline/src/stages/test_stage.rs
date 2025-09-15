@@ -41,11 +41,7 @@ impl Stage for StatefulTestStage {
         Ok(vec![("out".to_string(), packet)])
     }
 
-    fn control(
-        &mut self,
-        cmd: &ControlCommand,
-        ctx: &mut StageContext,
-    ) -> Result<(), StageError> {
+    fn control(&mut self, cmd: &ControlCommand, ctx: &mut StageContext) -> Result<(), StageError> {
         if let ControlCommand::SetTestState(new_state) = cmd {
             self.state = *new_state;
             ctx.emit_event(PipelineEvent::TestStateChanged(self.state))?;

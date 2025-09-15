@@ -1,13 +1,13 @@
 //! PID file management for ensuring single daemon instance
-//! 
+//!
 //! This module provides functionality to create, check, and clean up PID files
 //! to prevent multiple daemon instances from running simultaneously.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Write, BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::os::unix::fs::OpenOptionsExt;
 
 /// Manages PID file operations for single-instance enforcement
 pub struct PidManager {
@@ -36,14 +36,20 @@ impl PidManager {
                             self.pid_file_path.display()
                         ));
                     } else {
-                        println!("Found stale PID file for non-running process {}. Cleaning up...", existing_pid);
+                        println!(
+                            "Found stale PID file for non-running process {}. Cleaning up...",
+                            existing_pid
+                        );
                         if let Err(e) = self.cleanup_stale_pid() {
                             println!("Warning: Failed to cleanup stale PID file: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Warning: Could not read existing PID file: {}. Attempting cleanup...", e);
+                    println!(
+                        "Warning: Could not read existing PID file: {}. Attempting cleanup...",
+                        e
+                    );
                     if let Err(e) = self.cleanup_stale_pid() {
                         println!("Warning: Failed to cleanup invalid PID file: {}", e);
                     }
@@ -75,7 +81,11 @@ impl PidManager {
         file.sync_all()
             .map_err(|e| format!("Failed to sync PID file: {}", e))?;
 
-        println!("PID file created: {} (PID: {})", self.pid_file_path.display(), current_pid);
+        println!(
+            "PID file created: {} (PID: {})",
+            self.pid_file_path.display(),
+            current_pid
+        );
         Ok(())
     }
 
@@ -106,7 +116,10 @@ impl PidManager {
         if self.pid_file_path.exists() {
             std::fs::remove_file(&self.pid_file_path)
                 .map_err(|e| format!("Failed to remove stale PID file: {}", e))?;
-            println!("Stale PID file cleaned up: {}", self.pid_file_path.display());
+            println!(
+                "Stale PID file cleaned up: {}",
+                self.pid_file_path.display()
+            );
         }
         Ok(())
     }
@@ -118,10 +131,13 @@ impl PidManager {
 
         let mut reader = BufReader::new(file);
         let mut pid_str = String::new();
-        reader.read_line(&mut pid_str)
+        reader
+            .read_line(&mut pid_str)
             .map_err(|e| format!("Failed to read PID file: {}", e))?;
 
-        pid_str.trim().parse::<u32>()
+        pid_str
+            .trim()
+            .parse::<u32>()
             .map_err(|e| format!("Invalid PID in file: {}", e))
     }
 
@@ -130,9 +146,9 @@ impl PidManager {
         // On Unix systems, we can check if a process exists by sending signal 0
         // This doesn't actually send a signal but checks if the process exists
         match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None) {
-            Ok(_) => true,  // Process exists
-            Err(nix::errno::Errno::ESRCH) => false,  // No such process
-            Err(_) => true,  // Other error (permission denied, etc.) - assume process exists
+            Ok(_) => true,                          // Process exists
+            Err(nix::errno::Errno::ESRCH) => false, // No such process
+            Err(_) => true, // Other error (permission denied, etc.) - assume process exists
         }
     }
 
@@ -162,7 +178,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let pid_file = temp_dir.path().join("test.pid");
         let manager = PidManager::new(&pid_file);
-        
+
         assert_eq!(manager.pid_file_path(), pid_file);
     }
 
@@ -171,11 +187,11 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let pid_file = temp_dir.path().join("test.pid");
         let manager = PidManager::new(&pid_file);
-        
+
         // Should be able to acquire lock
         assert!(manager.acquire_lock().is_ok());
         assert!(pid_file.exists());
-        
+
         // Should be able to release lock
         assert!(manager.release_lock().is_ok());
         assert!(!pid_file.exists());
@@ -185,16 +201,16 @@ mod tests {
     fn test_double_lock_prevention() {
         let temp_dir = tempdir().unwrap();
         let pid_file = temp_dir.path().join("test.pid");
-        
+
         let manager1 = PidManager::new(&pid_file);
         let manager2 = PidManager::new(&pid_file);
-        
+
         // First manager should acquire lock successfully
         assert!(manager1.acquire_lock().is_ok());
-        
+
         // Second manager should fail to acquire lock
         assert!(manager2.acquire_lock().is_err());
-        
+
         // Clean up
         assert!(manager1.release_lock().is_ok());
     }
@@ -203,16 +219,16 @@ mod tests {
     fn test_stale_pid_cleanup() {
         let temp_dir = tempdir().unwrap();
         let pid_file = temp_dir.path().join("test.pid");
-        
+
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "99999").unwrap();
-        
+
         let manager = PidManager::new(&pid_file);
-        
+
         // Should be able to acquire lock after cleaning up stale PID
         assert!(manager.acquire_lock().is_ok());
         assert!(pid_file.exists());
-        
+
         // Clean up
         assert!(manager.release_lock().is_ok());
     }

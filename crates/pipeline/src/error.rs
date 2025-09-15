@@ -121,4 +121,3 @@ impl From<serde_json::Error> for StageError {
         StageError::JsonError(err.to_string())
     }
 }
-

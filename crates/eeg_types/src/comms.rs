@@ -44,18 +44,18 @@ pub mod client {
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
     #[serde(rename_all = "camelCase")]
     pub struct SubscribedAck {
-    	pub topic: String,
-    	#[serde(skip_serializing_if = "Option::is_none")]
-    	pub meta_rev: Option<u64>,
+        pub topic: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub meta_rev: Option<u64>,
     }
-   
+
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
     #[serde(rename_all = "camelCase")]
     pub enum ServerMessage {
-    	Subscribed(SubscribedAck),
-    	Error(String),
+        Subscribed(SubscribedAck),
+        Error(String),
     }
-   
+
     #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
     #[serde(tag = "type", rename_all = "camelCase")]
     pub enum ClientMessage {

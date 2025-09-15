@@ -1,6 +1,6 @@
-use std::error::Error;
 use clap::Parser;
 use sensors::types::{AdcConfig, ChipConfig};
+use std::error::Error;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
