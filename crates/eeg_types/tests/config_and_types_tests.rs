@@ -9,7 +9,7 @@ use eeg_types::{
 };
 
 #[test]
-fn test_daemon_config_creation_and_defaults() {
+fn daemon_config_defaults() {
     // Test the actual DaemonConfig struct
     let config = DaemonConfig::default();
 
@@ -35,7 +35,7 @@ fn test_daemon_config_creation_and_defaults() {
 }
 
 #[test]
-fn test_driver_type_variants() {
+fn driver_type_variants() {
     // Test all DriverType variants exist and can be compared
     assert_eq!(DriverType::ElataV1, DriverType::ElataV1);
     assert_eq!(DriverType::ElataV2, DriverType::ElataV2);
@@ -48,7 +48,7 @@ fn test_driver_type_variants() {
 }
 
 #[test]
-fn test_sensor_meta_structure() {
+fn sensor_meta_structure() {
     // Test the actual SensorMeta struct
     let meta = SensorMeta::default();
 
@@ -84,7 +84,7 @@ fn test_sensor_meta_structure() {
 }
 
 #[test]
-fn test_serialization_works() {
+fn config_serialization() {
     // Test that our types can be serialized (important for config files)
     let config = DaemonConfig::default();
 
@@ -109,7 +109,7 @@ fn test_serialization_works() {
 }
 
 #[test]
-fn test_driver_type_serialization() {
+fn driver_type_serialization() {
     // Test DriverType serialization (important for config files)
     let driver_types = vec![
         DriverType::ElataV1,

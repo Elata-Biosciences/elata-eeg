@@ -42,11 +42,11 @@ test result: ok. 4 passed; 0 failed
 
 Running tests/config_and_types_tests.rs
 running 5 tests
-test test_daemon_config_creation_and_defaults ... ok
-test test_driver_type_variants ... ok
-test test_sensor_meta_structure ... ok
-test test_driver_type_serialization ... ok
-test test_serialization_works ... ok
+test config_serialization ... ok
+test daemon_config_defaults ... ok
+test driver_type_serialization ... ok
+test driver_type_variants ... ok
+test sensor_meta_structure ... ok
 test result: ok. 5 passed; 0 failed
 ```
 

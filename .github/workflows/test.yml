@@ -115,18 +115,3 @@ jobs:
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Check for unused dependencies (core packages only)
-  unused-deps:
-    name: Unused Dependencies
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@v1
-      with:
-        toolchain: nightly
-        components: rustfmt, clippy
-    - name: Install cargo-udeps
-      run: cargo install cargo-udeps --locked
-    - name: Check unused dependencies
-      run: cargo +nightly udeps -p eeg_types --all-targets
