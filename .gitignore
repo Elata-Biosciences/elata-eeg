@@ -48,3 +48,6 @@ yarn-error.log*
 .DS_Store
 
 /logs/
+
+# bci ignores
+metabci_model
