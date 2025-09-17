@@ -266,38 +266,25 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   // Use a window property to prevent duplicate logging in development mode
   const systemReadyGuardKey = '__eeg_system_ready_guard__';
 
-  // Effect to determine when the system is truly ready
-  // Criteria:
-  // - Prefer config with channels (authoritative), OR
-  // - If data is flowing (dataReceived), allow UI to proceed to avoid being stuck on "Initializing"
+  // Effect to determine when the system is truly ready and when to connect
+  // New rule: always attempt the WebSocket connection; don't rely on pipelineStatus/SSE
+  // UI readiness still prefers authoritative config, but will proceed when data flows
   useEffect(() => {
     console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'config channels:', config?.channels?.length, 'dataReceived:', dataReceived);
-    // In development, always attempt to connect so /debug works even if pipeline state is unclear
-    const shouldConnectNow = pipelineStatus === 'started' || process.env.NODE_ENV === 'development';
-    if (shouldConnectNow) {
-      setShouldConnect(true);
 
-      const hasAuthoritativeConfig = !!(config && config.channels && config.channels.length > 0);
-      const canProceed = hasAuthoritativeConfig || dataReceived;
+    // Always allow the WS to connect; this avoids "stuck" states when SSE/pipeline state isn't available
+    setShouldConnect(true);
 
-      setIsReady(canProceed);
+    const hasAuthoritativeConfig = !!(config && config.channels && config.channels.length > 0);
+    const canProceed = hasAuthoritativeConfig || dataReceived;
 
-      if (canProceed && !(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
-        if (process.env.NODE_ENV === 'development') {
-          (window as any)[systemReadyGuardKey] = true;
-        }
-        console.log('[EegDataContext] System is ready.', hasAuthoritativeConfig ? 'Authoritative config present.' : 'Proceeding based on live data.');
+    setIsReady(canProceed);
+
+    if (canProceed && !(process.env.NODE_ENV === 'development' && (window as any)[systemReadyGuardKey])) {
+      if (process.env.NODE_ENV === 'development') {
+        (window as any)[systemReadyGuardKey] = true;
       }
-    } else {
-      // Only reset isReady if we're not in a reconnection state
-      if (!isReconnecting) {
-        setIsReady(false);
-        // Do not set shouldConnect to false here (keep connection alive during restarts)
-        if (process.env.NODE_ENV === 'development') {
-          // @ts-ignore - Adding custom property to window object
-          window[systemReadyGuardKey] = false;
-        }
-      }
+      console.log('[EegDataContext] System is ready.', hasAuthoritativeConfig ? 'Authoritative config present.' : 'Proceeding based on live data.');
     }
   }, [pipelineStatus, config, dataReceived]);
 
@@ -487,10 +474,19 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
 
         // 5. Process the samples based on the explicit packet_type
         const samplesBuffer = event.data.slice(samplesOffset);
-        const samples =
-          header.packet_type === 'RawI32'
-            ? new Int32Array(samplesBuffer)
-            : new Float32Array(samplesBuffer);
+        let samples: Int32Array | Float32Array;
+        switch (header.packet_type) {
+          case 'RawI32':
+            samples = new Int32Array(samplesBuffer);
+            break;
+          case 'Voltage':
+          case 'VoltageF32':
+          case 'Float32':
+          default:
+            // Default to Float32 for voltage streams
+            samples = new Float32Array(samplesBuffer);
+            break;
+        }
 
         // Now you have the full context: `header` and `topicMeta` to process the `samples`
         const newChunk: SampleChunk = {
