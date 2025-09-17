@@ -3,8 +3,8 @@
 //! This allocator is designed to reduce heap fragmentation and improve performance
 //! by reusing `Packet` buffers from a pre-allocated pool.
 
-use std::ops::{Deref, DerefMut};
 use crossbeam_queue::SegQueue;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 /// A shared, thread-safe handle to the central `PacketAllocator`.
@@ -21,8 +21,7 @@ pub struct PacketAllocator {
 /// A macro to define a vector type that returns its buffer to a pool on drop.
 macro_rules! define_recycled_vec {
     ($name:ident, $type:ty, $pool:ident) => {
-        #[derive(Debug)]
-        #[derive(Clone)]
+        #[derive(Debug, Clone)]
         pub struct $name {
             vec: Vec<$type>,
             allocator: SharedPacketAllocator,
@@ -79,7 +78,6 @@ macro_rules! define_recycled_vec {
 define_recycled_vec!(RecycledI32Vec, i32, i32_pool);
 define_recycled_vec!(RecycledF32Vec, f32, f32_pool);
 define_recycled_vec!(RecycledI32F32TupleVec, (i32, f32), i32_f32_tuple_pool);
-
 
 impl PacketAllocator {
     /// Creates a new, empty `PacketAllocator`.

@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Manually construct the JSON string to avoid serialization/import issues.
     // This is the format the daemon expects, based on its internal tests.
     let sub_msg_json = r#"{"type":"subscribe","topic":"eeg_voltage","epoch":1}"#.to_string();
-    
+
     println!("Sending subscription message: {}", sub_msg_json);
     write.send(Message::Text(sub_msg_json)).await?;
     println!("Subscription message sent. Waiting for data...");

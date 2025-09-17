@@ -29,15 +29,15 @@ pub struct StageConfig {
     #[serde(default)]
     pub channel_capacity: Option<usize>,
 }
-    
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use serde_json::json;
-    
-        #[test]
-        fn test_deserialize_system_config() {
-            let json_str = r#"
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_deserialize_system_config() {
+        let json_str = r#"
             {
                 "version": "1.0",
                 "metadata": {
@@ -55,17 +55,17 @@ pub struct StageConfig {
                 ]
             }
             "#;
-    
-            let config: SystemConfig = serde_json::from_str(json_str).unwrap();
-    
-            assert_eq!(config.version, "1.0");
-            assert_eq!(config.metadata["name"], json!("Test Pipeline"));
-            assert_eq!(config.stages.len(), 1);
-    
-            let stage = &config.stages[0];
-            assert_eq!(stage.name, "stage1");
-            assert_eq!(stage.stage_type, "filter");
-            assert_eq!(stage.params["lowpass"], json!(50.0));
-            assert_eq!(stage.inputs, vec!["source1"]);
-        }
+
+        let config: SystemConfig = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(config.version, "1.0");
+        assert_eq!(config.metadata["name"], json!("Test Pipeline"));
+        assert_eq!(config.stages.len(), 1);
+
+        let stage = &config.stages[0];
+        assert_eq!(stage.name, "stage1");
+        assert_eq!(stage.stage_type, "filter");
+        assert_eq!(stage.params["lowpass"], json!(50.0));
+        assert_eq!(stage.inputs, vec!["source1"]);
     }
+}

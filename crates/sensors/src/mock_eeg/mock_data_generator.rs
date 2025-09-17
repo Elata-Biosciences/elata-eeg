@@ -1,8 +1,8 @@
-use std::f32::consts::PI;
-use rand::Rng;
-use log::{debug, trace};
-use lazy_static::lazy_static;
 use super::super::types::{AdcConfig, DriverError};
+use lazy_static::lazy_static;
+use log::{debug, trace};
+use rand::Rng;
+use std::f32::consts::PI;
 
 /// Helper function to get current timestamp in microseconds
 ///
@@ -21,7 +21,7 @@ pub fn current_timestamp_micros() -> Result<u64, DriverError> {
 fn convert_sample_to_voltage(sample_value: i32, gain: u8, use_4_5v_ref: bool) -> f32 {
     // Factor for converting to voltage: 2^23 (full scale of 24-bit ADC with sign bit)
     const FACTOR: f64 = 8_388_608.0; // 2^23
-    
+
     // Get the full-scale voltage based on gain and reference voltage
     let v_fs = if use_4_5v_ref {
         match gain {
@@ -46,7 +46,7 @@ fn convert_sample_to_voltage(sample_value: i32, gain: u8, use_4_5v_ref: bool) ->
             _ => 2.4, // Default to gain=1 value if invalid gain provided
         }
     };
-    
+
     // Convert to voltage and return as f32
     ((sample_value as f64 * v_fs) / FACTOR) as f32
 }
@@ -62,21 +62,24 @@ pub fn gen_eeg_sinusoid_data(config: &AdcConfig, relative_micros: u64) -> Vec<i3
     // Scale factor for converting sine wave (-1.0 to 1.0) to 24-bit range
     const AMPLITUDE: f32 = 2000.0 * 256.0; // Scale for 24-bit range
 
-    config.chips.iter().flat_map(|chip| &chip.channels).enumerate().map(|(i, _channel)| {
-        let freq = 2.0 + (i as f32) * 4.0; // 2 Hz for ch0, 6 Hz for ch1, etc.
-        let angle = 2.0 * PI * freq * t_secs;
-        let waveform = angle.sin();
-        (waveform * AMPLITUDE) as i32
-    }).collect()
+    config
+        .chips
+        .iter()
+        .flat_map(|chip| &chip.channels)
+        .enumerate()
+        .map(|(i, _channel)| {
+            let freq = 2.0 + (i as f32) * 4.0; // 2 Hz for ch0, 6 Hz for ch1, etc.
+            let angle = 2.0 * PI * freq * t_secs;
+            let waveform = angle.sin();
+            (waveform * AMPLITUDE) as i32
+        })
+        .collect()
 }
 
 /// Helper function to generate more realistic EEG-like data with multiple frequency bands.
 /// This implementation creates synthetic EEG data with delta, theta, alpha, beta, and gamma
 /// components, as well as simulated line noise at 50Hz and 60Hz.
 pub fn gen_realistic_eeg_data(config: &AdcConfig, relative_micros: u64) -> Vec<i32> {
-    
-    
-
     // Define constants
     #[allow(dead_code)]
     const BYTES_PER_SAMPLE: usize = 3; // Assuming 24-bit samples (i24)
@@ -97,8 +100,14 @@ pub fn gen_realistic_eeg_data(config: &AdcConfig, relative_micros: u64) -> Vec<i
     let generator_key = (config.sample_rate, total_channels);
 
     if !generators.contains_key(&generator_key) {
-        debug!("Creating new EEG generator for sample rate {} Hz and {} channels", config.sample_rate, total_channels);
-        generators.insert(generator_key, EegGenerator::new(config.sample_rate, total_channels));
+        debug!(
+            "Creating new EEG generator for sample rate {} Hz and {} channels",
+            config.sample_rate, total_channels
+        );
+        generators.insert(
+            generator_key,
+            EegGenerator::new(config.sample_rate, total_channels),
+        );
     }
 
     // Get a mutable reference to the generator
@@ -110,9 +119,13 @@ pub fn gen_realistic_eeg_data(config: &AdcConfig, relative_micros: u64) -> Vec<i
     }
 
     // Generate samples for each channel
-    config.chips.iter().flat_map(|chip| &chip.channels).enumerate().map(|(i, _channel)| {
-        gen.generate_sample(i)
-    }).collect()
+    config
+        .chips
+        .iter()
+        .flat_map(|chip| &chip.channels)
+        .enumerate()
+        .map(|(i, _channel)| gen.generate_sample(i))
+        .collect()
 }
 
 /// A generator for realistic EEG-like data with multiple frequency bands.
@@ -147,57 +160,60 @@ pub struct EegGenerator {
 impl EegGenerator {
     pub fn new(sample_rate: u32, num_channels: usize) -> Self {
         let mut rng = rand::thread_rng();
-        
-        debug!("Initializing EEG generator with {} Hz sample rate", sample_rate);
-        
+
+        debug!(
+            "Initializing EEG generator with {} Hz sample rate",
+            sample_rate
+        );
+
         // Create different weights for each channel
         // Format: [delta, theta, alpha, beta, gamma]
         let base_channel_weights = [
             // ch1 - ch8
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal left (Fp1) - more delta/theta
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal right (Fp2) - similar to Fp1
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central left (C3) - mix
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central right (C4) - mix
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal left (P3) - stronger alpha
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal right (P4) - stronger alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital left (O1) - strongest alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital right (O2) - strongest alpha
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal left (Fp1) - more delta/theta
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal right (Fp2) - similar to Fp1
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central left (C3) - mix
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central right (C4) - mix
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal left (P3) - stronger alpha
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal right (P4) - stronger alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital left (O1) - strongest alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital right (O2) - strongest alpha
             // ch9 - ch16
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal left (Fp1) - more delta/theta
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal right (Fp2) - similar to Fp1
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central left (C3) - mix
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central right (C4) - mix
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal left (P3) - stronger alpha
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal right (P4) - stronger alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital left (O1) - strongest alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital right (O2) - strongest alpha            
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal left (Fp1) - more delta/theta
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal right (Fp2) - similar to Fp1
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central left (C3) - mix
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central right (C4) - mix
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal left (P3) - stronger alpha
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal right (P4) - stronger alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital left (O1) - strongest alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital right (O2) - strongest alpha
             // ch17 - ch24
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal left (Fp1) - more delta/theta
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal right (Fp2) - similar to Fp1
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central left (C3) - mix
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central right (C4) - mix
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal left (P3) - stronger alpha
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal right (P4) - stronger alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital left (O1) - strongest alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital right (O2) - strongest alpha
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal left (Fp1) - more delta/theta
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal right (Fp2) - similar to Fp1
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central left (C3) - mix
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central right (C4) - mix
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal left (P3) - stronger alpha
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal right (P4) - stronger alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital left (O1) - strongest alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital right (O2) - strongest alpha
             // ch25 - ch32
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal left (Fp1) - more delta/theta
-            [3.0, 1.5, 0.8, 0.4, 0.1],  // Frontal right (Fp2) - similar to Fp1
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central left (C3) - mix
-            [2.0, 1.2, 1.5, 0.6, 0.1],  // Central right (C4) - mix
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal left (P3) - stronger alpha
-            [1.5, 1.0, 2.5, 0.7, 0.1],  // Parietal right (P4) - stronger alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital left (O1) - strongest alpha
-            [1.2, 0.8, 3.0, 0.5, 0.1],  // Occipital right (O2) - strongest alpha  
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal left (Fp1) - more delta/theta
+            [3.0, 1.5, 0.8, 0.4, 0.1], // Frontal right (Fp2) - similar to Fp1
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central left (C3) - mix
+            [2.0, 1.2, 1.5, 0.6, 0.1], // Central right (C4) - mix
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal left (P3) - stronger alpha
+            [1.5, 1.0, 2.5, 0.7, 0.1], // Parietal right (P4) - stronger alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital left (O1) - strongest alpha
+            [1.2, 0.8, 3.0, 0.5, 0.1], // Occipital right (O2) - strongest alpha
         ];
-        
+
         // Create channel weights for the requested number of channels
         let mut channel_weights = Vec::with_capacity(num_channels);
         for i in 0..num_channels {
             // Reuse the base weights if we have more than 8 channels
             channel_weights.push(base_channel_weights[i % 8]);
         }
-        
+
         // Initialize random starting phases
         let mut delta_phase = vec![0.0; num_channels];
         let mut theta_phase = vec![0.0; num_channels];
@@ -208,7 +224,7 @@ impl EegGenerator {
         let mut line_noise_60hz_phase = vec![0.0; num_channels];
         let mut line_noise_amplitude = vec![0.0; num_channels];
         let alpha_burst_counter = vec![0; num_channels];
-        
+
         for i in 0..num_channels {
             delta_phase[i] = rng.gen::<f32>() * 2.0 * PI;
             theta_phase[i] = rng.gen::<f32>() * 2.0 * PI;
@@ -217,11 +233,11 @@ impl EegGenerator {
             gamma_phase[i] = rng.gen::<f32>() * 2.0 * PI;
             line_noise_50hz_phase[i] = rng.gen::<f32>() * 2.0 * PI;
             line_noise_60hz_phase[i] = rng.gen::<f32>() * 2.0 * PI;
-            
+
             // Different channels pick up different amounts of line noise
             line_noise_amplitude[i] = rng.gen_range(0.2..0.7);
         }
-        
+
         Self {
             sample_rate,
             num_channels,
@@ -232,11 +248,11 @@ impl EegGenerator {
             alpha_phase,
             beta_phase,
             gamma_phase,
-            delta_freq: 2.5,    // Center of delta band
-            theta_freq: 6.0,    // Center of theta band
-            alpha_freq: 10.0,   // Center of alpha band
-            beta_freq: 20.0,    // Center of beta band
-            gamma_freq: 40.0,   // Lower gamma
+            delta_freq: 2.5,  // Center of delta band
+            theta_freq: 6.0,  // Center of theta band
+            alpha_freq: 10.0, // Center of alpha band
+            beta_freq: 20.0,  // Center of beta band
+            gamma_freq: 40.0, // Lower gamma
             channel_weights,
             alpha_burst_counter,
             line_noise_50hz_phase,
@@ -246,18 +262,18 @@ impl EegGenerator {
 
     pub fn generate_sample(&mut self, channel: usize) -> i32 {
         let mut rng = rand::thread_rng();
-        
+
         // Phase increments for each oscillator
         let delta_phase_inc = 2.0 * PI * self.delta_freq / self.sample_rate as f32;
         let theta_phase_inc = 2.0 * PI * self.theta_freq / self.sample_rate as f32;
         let alpha_phase_inc = 2.0 * PI * self.alpha_freq / self.sample_rate as f32;
         let beta_phase_inc = 2.0 * PI * self.beta_freq / self.sample_rate as f32;
         let gamma_phase_inc = 2.0 * PI * self.gamma_freq / self.sample_rate as f32;
-        
+
         // Line noise phase increments
         let line_50hz_inc = 2.0 * PI * 50.0 / self.sample_rate as f32;
         let line_60hz_inc = 2.0 * PI * 60.0 / self.sample_rate as f32;
-        
+
         // Update phases
         self.delta_phase[channel] += delta_phase_inc;
         self.theta_phase[channel] += theta_phase_inc;
@@ -266,33 +282,49 @@ impl EegGenerator {
         self.gamma_phase[channel] += gamma_phase_inc;
         self.line_noise_50hz_phase[channel] += line_50hz_inc;
         self.line_noise_60hz_phase[channel] += line_60hz_inc;
-        
+
         // Wrap phases to avoid floating point precision issues
-        if self.delta_phase[channel] > 2.0 * PI { self.delta_phase[channel] -= 2.0 * PI; }
-        if self.theta_phase[channel] > 2.0 * PI { self.theta_phase[channel] -= 2.0 * PI; }
-        if self.alpha_phase[channel] > 2.0 * PI { self.alpha_phase[channel] -= 2.0 * PI; }
-        if self.beta_phase[channel] > 2.0 * PI { self.beta_phase[channel] -= 2.0 * PI; }
-        if self.gamma_phase[channel] > 2.0 * PI { self.gamma_phase[channel] -= 2.0 * PI; }
-        if self.line_noise_50hz_phase[channel] > 2.0 * PI { self.line_noise_50hz_phase[channel] -= 2.0 * PI; }
-        if self.line_noise_60hz_phase[channel] > 2.0 * PI { self.line_noise_60hz_phase[channel] -= 2.0 * PI; }
-        
+        if self.delta_phase[channel] > 2.0 * PI {
+            self.delta_phase[channel] -= 2.0 * PI;
+        }
+        if self.theta_phase[channel] > 2.0 * PI {
+            self.theta_phase[channel] -= 2.0 * PI;
+        }
+        if self.alpha_phase[channel] > 2.0 * PI {
+            self.alpha_phase[channel] -= 2.0 * PI;
+        }
+        if self.beta_phase[channel] > 2.0 * PI {
+            self.beta_phase[channel] -= 2.0 * PI;
+        }
+        if self.gamma_phase[channel] > 2.0 * PI {
+            self.gamma_phase[channel] -= 2.0 * PI;
+        }
+        if self.line_noise_50hz_phase[channel] > 2.0 * PI {
+            self.line_noise_50hz_phase[channel] -= 2.0 * PI;
+        }
+        if self.line_noise_60hz_phase[channel] > 2.0 * PI {
+            self.line_noise_60hz_phase[channel] -= 2.0 * PI;
+        }
+
         // Generate signals for each frequency band
         let delta = self.delta_phase[channel].sin() * self.channel_weights[channel][0];
         let theta = self.theta_phase[channel].sin() * self.channel_weights[channel][1];
         let alpha = self.alpha_phase[channel].sin() * self.channel_weights[channel][2];
         let beta = self.beta_phase[channel].sin() * self.channel_weights[channel][3];
         let gamma = self.gamma_phase[channel].sin() * self.channel_weights[channel][4];
-        
+
         // Add line noise
-        let line_noise_50 = self.line_noise_50hz_phase[channel].sin() * self.line_noise_amplitude[channel] * 0.7;
-        let line_noise_60 = self.line_noise_60hz_phase[channel].sin() * self.line_noise_amplitude[channel] * 0.3;
-        
+        let line_noise_50 =
+            self.line_noise_50hz_phase[channel].sin() * self.line_noise_amplitude[channel] * 0.7;
+        let line_noise_60 =
+            self.line_noise_60hz_phase[channel].sin() * self.line_noise_amplitude[channel] * 0.3;
+
         // Add some random noise (1/f noise approximation)
         let noise = (rng.gen::<f32>() - 0.5) * 0.2;
-        
+
         // Combine all components
         let signal = delta + theta + alpha + beta + gamma + line_noise_50 + line_noise_60 + noise;
-        
+
         // Scale to 24-bit range and convert to i32
         let amplitude = 10.0 * 256.0; // Scale up by 2^8 for 24-bit vs 16-bit
         (signal * amplitude) as i32

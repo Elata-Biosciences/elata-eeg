@@ -11,14 +11,10 @@ use std::time::Duration;
 /// - `Ok(true)` if the interrupt was received within the timeout.
 /// - `Ok(false)` if the timeout occurred.
 /// - `Err(DriverError)` if there was a GPIO error.
-pub fn wait_irq(
-    pin: &mut InputPin,
-    timeout: Duration,
-) -> Result<bool, crate::types::DriverError> {
+pub fn wait_irq(pin: &mut InputPin, timeout: Duration) -> Result<bool, crate::types::DriverError> {
     // Ensure the interrupt is configured for falling edge.
     // This might be redundant if set once at initialization, but it's safe.
-    pin.set_interrupt(Trigger::FallingEdge, None)
-?;
+    pin.set_interrupt(Trigger::FallingEdge, None)?;
 
     match pin.poll_interrupt(true, Some(timeout)) {
         Ok(Some(_)) => Ok(true),

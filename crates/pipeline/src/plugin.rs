@@ -1,16 +1,16 @@
 //! Plugin system for the EEG daemon
-//! 
+//!
 //! This module defines the core plugin trait that all EEG processing plugins must implement.
 //! Plugins are essentially pipeline stages and can be integrated directly into the pipeline.
 
-use anyhow::Result;
 use crate::stage::Stage;
+use anyhow::Result;
 
 /// Configuration trait that all plugin configurations must implement
 pub trait PluginConfig: Send + Sync + Clone + std::fmt::Debug {
     /// Validate the configuration parameters
     fn validate(&self) -> Result<()>;
-    
+
     /// Get a human-readable name for this configuration
     fn config_name(&self) -> &str;
 }
@@ -22,7 +22,7 @@ pub trait EegPlugin: Stage {
     fn version(&self) -> &'static str {
         "1.0.0"
     }
-    
+
     /// Get a description of what this plugin does
     fn description(&self) -> &'static str {
         "EEG processing plugin"
@@ -103,10 +103,10 @@ impl Default for SupervisorConfig {
 impl SupervisorConfig {
     /// Calculate backoff delay for a given attempt number
     pub fn calculate_backoff(&self, attempt: u8) -> std::time::Duration {
-        let delay_ms = (self.initial_backoff_ms as f64 
+        let delay_ms = (self.initial_backoff_ms as f64
             * self.backoff_multiplier.powi(attempt as i32 - 1))
-            .min(self.max_backoff_ms as f64) as u64;
-        
+        .min(self.max_backoff_ms as f64) as u64;
+
         std::time::Duration::from_millis(delay_ms)
     }
 }

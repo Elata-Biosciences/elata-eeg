@@ -1,11 +1,11 @@
-pub mod types;
 pub mod ads1299;
 #[cfg(feature = "mock_eeg")]
 pub mod mock_eeg;
 pub mod spi_bus;
+pub mod types;
 
 // Re-export the main types that users need
-pub use types::{AdcConfig, DriverStatus, DriverError, AdcDriver};
+pub use types::{AdcConfig, AdcDriver, DriverError, DriverStatus};
 
 // Optionally expose lower-level access through a raw module
 pub mod raw {

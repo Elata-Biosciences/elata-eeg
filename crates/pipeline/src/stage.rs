@@ -9,8 +9,8 @@ use eeg_types::comms::BrokerMessage;
 use flume::Sender;
 use sensors::types::AdcDriver;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::broadcast;
+use tokio::sync::Mutex;
 
 /// The possible states of a stage in the pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,11 +189,7 @@ impl<T: Stage + ?Sized> Stage for Box<T> {
         (**self).produce(ctx)
     }
 
-    fn control(
-        &mut self,
-        cmd: &ControlCommand,
-        ctx: &mut StageContext,
-    ) -> Result<(), StageError> {
+    fn control(&mut self, cmd: &ControlCommand, ctx: &mut StageContext) -> Result<(), StageError> {
         (**self).control(cmd, ctx)
     }
 

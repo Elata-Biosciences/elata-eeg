@@ -1,7 +1,7 @@
+use pipeline::control::ControlCommand;
 use pipeline::data::{PacketData, RtPacket};
 use pipeline::error::StageError;
 use pipeline::stage::{Stage, StageContext};
-use pipeline::control::ControlCommand;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -68,10 +68,11 @@ impl Stage for BasicVoltageFilterPlugin {
 
                     if let Some(channel_chunk) = voltage_samples.get_mut(start..end) {
                         let input_chunk = channel_chunk.to_vec();
-                        if let Err(e) =
-                            self.signal_processor
-                                .process_chunk(channel_idx, &input_chunk, channel_chunk)
-                        {
+                        if let Err(e) = self.signal_processor.process_chunk(
+                            channel_idx,
+                            &input_chunk,
+                            channel_chunk,
+                        ) {
                             return Err(StageError::Fatal(e.to_string()));
                         }
                     }

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use sensors::types::AdcConfig;
+use serde::{Deserialize, Serialize};
 
 /// A message from a client proposing a new configuration.
 #[derive(Serialize, Deserialize, Debug, Clone)]

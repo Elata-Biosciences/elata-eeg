@@ -70,9 +70,20 @@ impl Debug for ControlCommand {
             ControlCommand::Drain => write!(f, "Drain"),
             ControlCommand::StartRecording => write!(f, "StartRecording"),
             ControlCommand::StopRecording => write!(f, "StopRecording"),
-            ControlCommand::Reconfigure(config) => f.debug_tuple("Reconfigure").field(config).finish(),
-            ControlCommand::SetParameter { target_stage, parameters } => f.debug_struct("SetParameter").field("target_stage", target_stage).field("parameters", parameters).finish(),
-            ControlCommand::SetTestState(state) => f.debug_tuple("SetTestState").field(state).finish(),
+            ControlCommand::Reconfigure(config) => {
+                f.debug_tuple("Reconfigure").field(config).finish()
+            }
+            ControlCommand::SetParameter {
+                target_stage,
+                parameters,
+            } => f
+                .debug_struct("SetParameter")
+                .field("target_stage", target_stage)
+                .field("parameters", parameters)
+                .finish(),
+            ControlCommand::SetTestState(state) => {
+                f.debug_tuple("SetTestState").field(state).finish()
+            }
             ControlCommand::Custom(cmd) => f.debug_tuple("Custom").field(cmd).finish(),
         }
     }
@@ -84,10 +95,7 @@ use eeg_types::{data::SensorMeta, event::SystemEvent};
 #[derive(Debug, Serialize)]
 pub enum PipelineEvent {
     /// Indicates that a pipeline has started and includes its configuration.
-    PipelineStarted {
-        id: String,
-        config: SystemConfig,
-    },
+    PipelineStarted { id: String, config: SystemConfig },
     /// Acknowledges that the pipeline has completed its shutdown sequence.
     ShutdownAck,
     /// (For testing) Confirms a test stage's state has changed.
@@ -110,9 +118,7 @@ pub enum PipelineEvent {
     /// Indicates that data is flowing through the pipeline.
     DataFlowing { packet_count: u64 },
     /// Indicates that the pipeline configuration has been updated.
-    ConfigUpdated {
-        config: crate::config::SystemConfig,
-    },
+    ConfigUpdated { config: crate::config::SystemConfig },
     /// Indicates that a source stage is ready and provides its metadata.
     SourceReady { meta: SensorMeta },
     /// Indicates that the entire pipeline has failed due to a panic.
@@ -124,20 +130,45 @@ pub enum PipelineEvent {
 impl PartialEq for PipelineEvent {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::PipelineStarted { id: lid, config: lc }, Self::PipelineStarted { id: rid, config: rc }) => {
-                lid == rid && lc == rc
-            }
+            (
+                Self::PipelineStarted {
+                    id: lid,
+                    config: lc,
+                },
+                Self::PipelineStarted {
+                    id: rid,
+                    config: rc,
+                },
+            ) => lid == rid && lc == rc,
             (Self::ShutdownAck, Self::ShutdownAck) => true,
             (Self::TestStateChanged(l), Self::TestStateChanged(r)) => l == r,
             (Self::StageStarted { stage_id: l }, Self::StageStarted { stage_id: r }) => l == r,
             (Self::StageStopped { stage_id: l }, Self::StageStopped { stage_id: r }) => l == r,
-            (Self::ParameterChanged { stage_id: ls, parameter_id: lp, value: lv }, Self::ParameterChanged { stage_id: rs, parameter_id: rp, value: rv }) => {
-                ls == rs && lp == rp && lv == rv
+            (
+                Self::ParameterChanged {
+                    stage_id: ls,
+                    parameter_id: lp,
+                    value: lv,
+                },
+                Self::ParameterChanged {
+                    stage_id: rs,
+                    parameter_id: rp,
+                    value: rv,
+                },
+            ) => ls == rs && lp == rp && lv == rv,
+            (
+                Self::ErrorOccurred {
+                    stage_id: ls,
+                    error_message: le,
+                },
+                Self::ErrorOccurred {
+                    stage_id: rs,
+                    error_message: re,
+                },
+            ) => ls == rs && le == re,
+            (Self::DataFlowing { packet_count: l }, Self::DataFlowing { packet_count: r }) => {
+                l == r
             }
-            (Self::ErrorOccurred { stage_id: ls, error_message: le }, Self::ErrorOccurred { stage_id: rs, error_message: re }) => {
-                ls == rs && le == re
-            }
-            (Self::DataFlowing { packet_count: l }, Self::DataFlowing { packet_count: r }) => l == r,
             (Self::ConfigUpdated { config: l }, Self::ConfigUpdated { config: r }) => l == r,
             (Self::SourceReady { meta: l }, Self::SourceReady { meta: r }) => l == r,
             (Self::PipelineFailed { error: l }, Self::PipelineFailed { error: r }) => l == r,

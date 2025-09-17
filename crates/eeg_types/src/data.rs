@@ -1,4 +1,3 @@
-
 use crate::event::FilterConfig;
 use serde::{Deserialize, Serialize};
 
@@ -66,8 +65,6 @@ pub struct SensorMeta {
     #[serde(default)]
     pub filter: Option<FilterConfig>,
 }
-
-
 
 impl Default for SensorMeta {
     fn default() -> Self {

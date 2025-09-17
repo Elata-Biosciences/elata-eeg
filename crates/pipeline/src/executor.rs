@@ -7,9 +7,7 @@ use crate::graph::{PipelineGraph, StageId, StageMode};
 use crate::stage::{Stage, StageContext, StageState};
 use flume::{Receiver, Selector, Sender};
 use std::collections::HashMap;
-use std::sync::{
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tracing::{debug, error, info, warn};
 
@@ -96,11 +94,7 @@ impl Executor {
     }
 
     /// Wires the graph and starts the threads.
-    fn wire_and_start(
-        &mut self,
-        graph: &mut PipelineGraph,
-        fatal_error_tx: Sender<FatalError>,
-    ) {
+    fn wire_and_start(&mut self, graph: &mut PipelineGraph, fatal_error_tx: Sender<FatalError>) {
         let core_ids = core_affinity::get_core_ids().unwrap_or_default();
         if core_ids.is_empty() {
             warn!("Could not get core IDs. Cannot set thread affinity.");
@@ -120,7 +114,10 @@ impl Executor {
                 } else {
                     "in".to_string()
                 };
-                stage_inputs.insert((stage_config.name.clone(), downstream_port_name.clone()), tx);
+                stage_inputs.insert(
+                    (stage_config.name.clone(), downstream_port_name.clone()),
+                    tx,
+                );
                 input_rxs.insert(downstream_port_name, rx);
             }
             stage_rxs.insert(stage_config.name.clone(), input_rxs);
@@ -130,10 +127,7 @@ impl Executor {
             HashMap::new();
         for stage_config in &graph.config.stages {
             for output_port in &stage_config.outputs {
-                stage_outputs.insert(
-                    (stage_config.name.clone(), output_port.clone()),
-                    Vec::new(),
-                );
+                stage_outputs.insert((stage_config.name.clone(), output_port.clone()), Vec::new());
             }
             if stage_config.outputs.is_empty() {
                 stage_outputs.insert((stage_config.name.clone(), "out".to_string()), Vec::new());
@@ -141,41 +135,47 @@ impl Executor {
         }
 
         for downstream_config in &graph.config.stages {
-                  for input_port_spec in &downstream_config.inputs {
-                      let (upstream_spec, downstream_port_name) =
-                          if let Some(parts) = input_port_spec.split_once("->") {
-                              (parts.0, parts.1.to_string())
-                          } else {
-                              (input_port_spec.as_str(), "in".to_string())
-                          };
-  
-                      let parts: Vec<&str> = upstream_spec.split('.').collect();
-                      if parts.len() != 2 {
-                          warn!(
+            for input_port_spec in &downstream_config.inputs {
+                let (upstream_spec, downstream_port_name) =
+                    if let Some(parts) = input_port_spec.split_once("->") {
+                        (parts.0, parts.1.to_string())
+                    } else {
+                        (input_port_spec.as_str(), "in".to_string())
+                    };
+
+                let parts: Vec<&str> = upstream_spec.split('.').collect();
+                if parts.len() != 2 {
+                    warn!(
                               "Skipping invalid input specifier '{}' for stage '{}'. Format must be 'stage_name.port_name'.",
                               upstream_spec, downstream_config.name
                           );
-                          continue;
-                      }
-                      let upstream_stage_name = parts[0].to_string();
-                      let upstream_port_name = parts[1].to_string();
-  
-                      if let Some(output_senders) =
-                          stage_outputs.get_mut(&(upstream_stage_name.clone(), upstream_port_name.clone()))
-                      {
-                          if let Some(input_sender) =
-                              stage_inputs.get(&(downstream_config.name.clone(), downstream_port_name.clone()))
-                          {
-                              output_senders.push(input_sender.clone());
-                              info!("Wired output '{}.{}' to input '{}' on stage '{}'", upstream_stage_name, upstream_port_name, downstream_port_name, downstream_config.name);
-                          } else {
-                              warn!("Wiring Error: Could not find input port '{}' for spec '{}' on downstream stage '{}'", downstream_port_name, input_port_spec, downstream_config.name);
-                          }
-                      } else {
-                          warn!("Wiring Error: Could not find output port '{}.{}' for downstream stage '{}'", upstream_stage_name, upstream_port_name, downstream_config.name);
-                      }
-                  }
-              }
+                    continue;
+                }
+                let upstream_stage_name = parts[0].to_string();
+                let upstream_port_name = parts[1].to_string();
+
+                if let Some(output_senders) = stage_outputs
+                    .get_mut(&(upstream_stage_name.clone(), upstream_port_name.clone()))
+                {
+                    if let Some(input_sender) = stage_inputs
+                        .get(&(downstream_config.name.clone(), downstream_port_name.clone()))
+                    {
+                        output_senders.push(input_sender.clone());
+                        info!(
+                            "Wired output '{}.{}' to input '{}' on stage '{}'",
+                            upstream_stage_name,
+                            upstream_port_name,
+                            downstream_port_name,
+                            downstream_config.name
+                        );
+                    } else {
+                        warn!("Wiring Error: Could not find input port '{}' for spec '{}' on downstream stage '{}'", downstream_port_name, input_port_spec, downstream_config.name);
+                    }
+                } else {
+                    warn!("Wiring Error: Could not find output port '{}.{}' for downstream stage '{}'", upstream_stage_name, upstream_port_name, downstream_config.name);
+                }
+            }
+        }
 
         let stage_ids: Vec<_> = graph.nodes.keys().cloned().collect();
         for (i, stage_id) in stage_ids.iter().enumerate() {
@@ -196,7 +196,6 @@ impl Executor {
                 .map(|((_, port), senders)| (port.clone(), senders.clone()))
                 .collect::<HashMap<_, _>>();
 
-
             let thread_name = node.name.clone();
             let builder = thread::Builder::new().name(thread_name);
             let core_ids_clone = core_ids.clone();
@@ -206,9 +205,15 @@ impl Executor {
                     if !core_ids_clone.is_empty() {
                         let core_id = core_ids_clone[i % core_ids_clone.len()];
                         if core_affinity::set_for_current(core_id) {
-                            debug!("Set affinity for stage '{}' to core {:?}", node.name, core_id);
+                            debug!(
+                                "Set affinity for stage '{}' to core {:?}",
+                                node.name, core_id
+                            );
                         } else {
-                            warn!("Failed to set affinity for stage '{}' to core {:?}", node.name, core_id);
+                            warn!(
+                                "Failed to set affinity for stage '{}' to core {:?}",
+                                node.name, core_id
+                            );
                         }
                     }
 
@@ -230,14 +235,19 @@ impl Executor {
                                             draining = true;
                                         }
                                         other => {
-                                            if let Err(e) = futures::executor::block_on(node.stage.lock()).control(&other, &mut context) {
+                                            if let Err(e) =
+                                                futures::executor::block_on(node.stage.lock())
+                                                    .control(&other, &mut context)
+                                            {
                                                 error!("Control error on '{}': {}", node.name, e);
                                             }
                                         }
                                     }
                                 }
 
-                                if node.state == StageState::Halted { break; }
+                                if node.state == StageState::Halted {
+                                    break;
+                                }
 
                                 // 1) Produce only if not draining
                                 let produced = if draining {
@@ -245,16 +255,22 @@ impl Executor {
                                     // For now, we just stop producing and let it halt on the next check.
                                     Ok(None)
                                 } else {
-                                    futures::executor::block_on(node.stage.lock()).produce(&mut context)
+                                    futures::executor::block_on(node.stage.lock())
+                                        .produce(&mut context)
                                 };
 
                                 match produced {
                                     Ok(Some(outputs)) => {
                                         for (port, pkt) in outputs {
                                             if let Some(senders) = output_txs_by_port.get(&port) {
-                                                for tx in senders { let _ = tx.send(pkt.clone()); }
+                                                for tx in senders {
+                                                    let _ = tx.send(pkt.clone());
+                                                }
                                             } else {
-                                                warn!("'{}' produced to unwired port '{}'", node.name, port);
+                                                warn!(
+                                                    "'{}' produced to unwired port '{}'",
+                                                    node.name, port
+                                                );
                                             }
                                         }
                                     }
@@ -264,7 +280,10 @@ impl Executor {
                                     }
                                     Err(e) => {
                                         error!("Producer '{}' error: {}", node.name, e);
-                                        let _ = fatal_error_tx.send(FatalError { stage_id: node.name.clone(), error: Box::new(e) });
+                                        let _ = fatal_error_tx.send(FatalError {
+                                            stage_id: node.name.clone(),
+                                            error: Box::new(e),
+                                        });
                                         node.state = StageState::Halted;
                                     }
                                 }
@@ -275,7 +294,8 @@ impl Executor {
                                 }
                             }
                         }
-                        _ => { // Consumer / Fanout
+                        _ => {
+                            // Consumer / Fanout
                             loop {
                                 if node.state == StageState::Halted {
                                     break;
@@ -301,7 +321,6 @@ impl Executor {
                                     continue;
                                 }
 
-
                                 if node.state == StageState::Draining {
                                     let all_inputs_disconnected =
                                         input_rxs.values().all(|rx| rx.is_disconnected());
@@ -316,19 +335,31 @@ impl Executor {
                                 for (_, rx) in &input_rxs {
                                     selector = selector.recv(rx, |msg| msg.map(StageMessage::Data));
                                 }
-                                selector = selector.recv(&stop_rx, |msg| msg.map(|_| StageMessage::Stop).map_err(|e| e.into()));
-                                selector = selector.recv(&control_rx, |msg| msg.map(StageMessage::Control).map_err(|e| e.into()));
+                                selector = selector.recv(&stop_rx, |msg| {
+                                    msg.map(|_| StageMessage::Stop).map_err(|e| e.into())
+                                });
+                                selector = selector.recv(&control_rx, |msg| {
+                                    msg.map(StageMessage::Control).map_err(|e| e.into())
+                                });
 
                                 // Use a timeout to prevent blocking indefinitely, allowing control messages to be checked.
-                                let result = selector.wait_timeout(std::time::Duration::from_millis(5));
+                                let result =
+                                    selector.wait_timeout(std::time::Duration::from_millis(5));
                                 match result {
                                     Ok(Ok(StageMessage::Data(packet))) => {
-                                        if process_packet(packet, &mut node, &mut context, &output_txs_by_port, &fatal_error_tx) {
+                                        if process_packet(
+                                            packet,
+                                            &mut node,
+                                            &mut context,
+                                            &output_txs_by_port,
+                                            &fatal_error_tx,
+                                        ) {
                                             break;
                                         }
                                     }
                                     Ok(Ok(StageMessage::Control(cmd))) => {
-                                        let mut stage = futures::executor::block_on(node.stage.lock());
+                                        let mut stage =
+                                            futures::executor::block_on(node.stage.lock());
                                         match cmd {
                                             ControlCommand::Drain => {
                                                 info!("Draining stage '{}'", stage.id());
@@ -345,7 +376,10 @@ impl Executor {
                                         node.state = StageState::Halted;
                                     }
                                     Ok(Err(_)) => {
-                                        info!("A channel for stage '{}' disconnected. Halting.", node.name);
+                                        info!(
+                                            "A channel for stage '{}' disconnected. Halting.",
+                                            node.name
+                                        );
                                         node.state = StageState::Halted;
                                     }
                                     Err(_) => {
@@ -431,15 +465,14 @@ impl Executor {
                 }
             }
             if stage_config.outputs.is_empty() && !stage_config.inputs.is_empty() {
-                 let key = (stage_config.name.clone(), "out".to_string());
-                 if !output_connection_counts.contains_key(&key) {
+                let key = (stage_config.name.clone(), "out".to_string());
+                if !output_connection_counts.contains_key(&key) {
                     warn!(
                         "Output Validation: Default output port '{}.out' is not connected to any input.",
                         stage_config.name
                     );
                 }
             }
-
 
             // Check for inputs that are not connected.
             for input_port_spec in &stage_config.inputs {
@@ -452,9 +485,11 @@ impl Executor {
 
                 let is_connected = graph.config.stages.iter().any(|upstream_config| {
                     upstream_config.outputs.iter().any(|output_port| {
-                        let expected_input_spec = format!("{}.{}", upstream_config.name, output_port);
+                        let expected_input_spec =
+                            format!("{}.{}", upstream_config.name, output_port);
                         input_port_spec.starts_with(&expected_input_spec)
-                    }) || (upstream_config.outputs.is_empty() && input_port_spec == &format!("{}.out", upstream_config.name))
+                    }) || (upstream_config.outputs.is_empty()
+                        && input_port_spec == &format!("{}.out", upstream_config.name))
                 });
 
                 if !is_connected {
@@ -497,11 +532,17 @@ fn process_packet(
                 if let Some(senders) = output_txs_by_port.get(&port_name) {
                     for sender in senders {
                         if sender.send(packet.clone()).is_err() {
-                            debug!("Downstream channel for port '{}' on stage '{}' disconnected.", port_name, stage_id);
+                            debug!(
+                                "Downstream channel for port '{}' on stage '{}' disconnected.",
+                                port_name, stage_id
+                            );
                         }
                     }
                 } else {
-                    warn!("Stage '{}' produced output for un-wired port '{}'", stage_id, port_name);
+                    warn!(
+                        "Stage '{}' produced output for un-wired port '{}'",
+                        stage_id, port_name
+                    );
                 }
             }
         }

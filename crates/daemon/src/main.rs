@@ -1,11 +1,10 @@
+use backtrace::Backtrace;
 use std::{
     collections::HashMap,
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use backtrace::Backtrace;
 use tokio::sync::Mutex;
 
 use adc_daemon::plugin_supervisor::PluginSupervisor;
@@ -14,18 +13,18 @@ use adc_daemon::{
     config::ConfigBroker,
     websocket_broker::WebSocketBroker,
 };
-use eeg_types::comms::pipeline::BrokerMessage;
+use boards::elata_v2::driver::ElataV2Driver;
 use clap::{Arg, Command};
+use eeg_types::comms::pipeline::BrokerMessage;
 use pipeline::config::SystemConfig;
 use pipeline::control::PipelineEvent;
 use pipeline::executor::Executor;
+use pipeline::graph::PipelineGraph;
+use pipeline::registry::StageRegistry;
 use sensors::{
     mock_eeg::driver::MockDriver,
     types::{AdcConfig, AdcDriver, DriverError},
 };
-use boards::elata_v2::driver::ElataV2Driver;
-use pipeline::graph::PipelineGraph;
-use pipeline::registry::StageRegistry;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 fn resolve_config_path(input: &str) -> Result<PathBuf, DriverError> {
@@ -44,7 +43,9 @@ fn resolve_config_path(input: &str) -> Result<PathBuf, DriverError> {
         }
     }
     // 3) Relative to the workspace root (two levels up from crate dir)
-    let ws_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent());
+    let ws_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent());
     if let Some(root) = ws_root {
         let p3 = root.join(input);
         if p3.exists() {
@@ -56,7 +57,6 @@ fn resolve_config_path(input: &str) -> Result<PathBuf, DriverError> {
         input
     )))
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), DriverError> {
@@ -132,23 +132,23 @@ async fn main() -> Result<(), DriverError> {
         .and_then(|t| t.as_str())
         .unwrap_or("Mock");
 
-    let driver: Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>> = if use_mock || driver_type == "Mock" {
-        tracing::info!("Using mock EEG driver");
-        // Parse the driver configuration from the pipeline
-        let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
-            .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
-        Some(Arc::new(tokio::sync::Mutex::new(Box::new(MockDriver::new(
-            adc_config,
-        )?))))
-    } else {
-        tracing::info!("Using ElataV2 hardware driver");
-        // Parse the driver configuration from the pipeline
-        let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
-            .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
-        let driver_instance = ElataV2Driver::with_default_board(adc_config)?;
-        Some(Arc::new(tokio::sync::Mutex::new(Box::new(driver_instance))))
-    };
-
+    let driver: Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>> =
+        if use_mock || driver_type == "Mock" {
+            tracing::info!("Using mock EEG driver");
+            // Parse the driver configuration from the pipeline
+            let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
+                .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
+            Some(Arc::new(tokio::sync::Mutex::new(Box::new(
+                MockDriver::new(adc_config)?,
+            ))))
+        } else {
+            tracing::info!("Using ElataV2 hardware driver");
+            // Parse the driver configuration from the pipeline
+            let adc_config: AdcConfig = serde_json::from_value(driver_config_value.clone())
+                .map_err(|e| DriverError::ConfigurationError(e.to_string()))?;
+            let driver_instance = ElataV2Driver::with_default_board(adc_config)?;
+            Some(Arc::new(tokio::sync::Mutex::new(Box::new(driver_instance))))
+        };
 
     tracing::info!("Building pipeline graph...");
     let graph = match PipelineGraph::build(
@@ -195,14 +195,13 @@ async fn main() -> Result<(), DriverError> {
             );
 
             let backtrace = Backtrace::new();
-            let error_msg =
-                if let Some(s) = fatal_error.error.downcast_ref::<&'static str>() {
-                    format!("Panic: '{}'\n{:?}", s, backtrace)
-                } else if let Some(s) = fatal_error.error.downcast_ref::<String>() {
-                    format!("Panic: '{}'\n{:?}", s, backtrace)
-                } else {
-                    format!("Unknown panic payload\n{:?}", backtrace)
-                };
+            let error_msg = if let Some(s) = fatal_error.error.downcast_ref::<&'static str>() {
+                format!("Panic: '{}'\n{:?}", s, backtrace)
+            } else if let Some(s) = fatal_error.error.downcast_ref::<String>() {
+                format!("Panic: '{}'\n{:?}", s, backtrace)
+            } else {
+                format!("Unknown panic payload\n{:?}", backtrace)
+            };
 
             if let Some(mut handle) = pipeline_handle_clone.lock().await.take() {
                 if let Some(executor) = handle.executor.take() {
@@ -210,12 +209,12 @@ async fn main() -> Result<(), DriverError> {
                 }
             }
 
-            let event = PipelineEvent::PipelineFailed {
-                error: error_msg,
-            };
+            let event = PipelineEvent::PipelineFailed { error: error_msg };
             if let Ok(event_json) = serde_json::to_string(&event) {
                 if fatal_error_sse_tx.send(event_json).is_err() {
-                    tracing::warn!("Failed to send pipeline failure SSE event: receiver disconnected.");
+                    tracing::warn!(
+                        "Failed to send pipeline failure SSE event: receiver disconnected."
+                    );
                 }
             }
         }
@@ -237,10 +236,12 @@ async fn main() -> Result<(), DriverError> {
 
             if let Ok(event_json) = serde_json::to_string(&event) {
                 // Send to SSE clients
-                if sse_tx_clone_for_forwarding.send(event_json.clone()).is_err() {
+                if sse_tx_clone_for_forwarding
+                    .send(event_json.clone())
+                    .is_err()
+                {
                     tracing::debug!("No active SSE subscribers to send event to.");
                 }
-
             } else {
                 tracing::error!("Failed to serialize pipeline event");
             }
@@ -271,14 +272,14 @@ async fn main() -> Result<(), DriverError> {
         event_tx: event_tx.clone(),
     };
 
-
     // --- Server Thread ---
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let server_handle =
-        tokio::spawn(adc_daemon::server::run(app_state.clone(), shutdown_rx));
+    let server_handle = tokio::spawn(adc_daemon::server::run(app_state.clone(), shutdown_rx));
 
     // --- Graceful Shutdown ---
-    tokio::signal::ctrl_c().await.map_err(|e| DriverError::IoError(e.to_string()))?;
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|e| DriverError::IoError(e.to_string()))?;
     tracing::info!("Shutdown signal received. Stopping services...");
 
     // 1. Signal the WebSocket broker to shut down gracefully.
@@ -309,11 +310,11 @@ async fn main() -> Result<(), DriverError> {
     match server_handle.await {
         Ok(Ok(_)) => {
             tracing::info!("Server shut down successfully");
-        },
+        }
         Ok(Err(e)) => {
             tracing::error!("Server error: {}", e);
             return Err(DriverError::Other(format!("Server error: {}", e)));
-        },
+        }
         Err(e) => {
             tracing::error!("Server task panicked: {:?}", e);
             return Err(DriverError::Other(format!("Server task failed: {:?}", e)));
@@ -332,4 +333,3 @@ async fn main() -> Result<(), DriverError> {
 
     Ok(())
 }
-

@@ -1,44 +1,42 @@
 use axum::{
-    extract::{
-        FromRef, Path, State,
-    },
+    extract::{FromRef, Path, State},
     http::StatusCode,
     response::{sse::Event, IntoResponse, Json, Sse},
     routing::{get, post},
     Router,
 };
-use futures::stream::{self, Stream, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::convert::Infallible;
-use tokio::sync::broadcast;
 use eeg_types::{comms::pipeline::BrokerMessage, data::SensorMeta};
 use flume::Sender;
+use futures::stream::{self, Stream, StreamExt};
 use pipeline::{
     control::ControlCommand,
     data::RtPacket,
     executor::{ControlBus, Executor},
 };
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::convert::Infallible;
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 // Shared application state
 use crate::{config::ConfigBroker, websocket_broker::WebSocketBroker};
- 
- use sensors::types::AdcDriver;
- 
- #[derive(Clone)]
- pub struct AppState {
-     pub pipelines: Arc<Mutex<HashMap<String, PathBuf>>>,
-     pub sse_tx: broadcast::Sender<String>,
-     pub event_tx: Sender<PipelineEvent>,
-     pub pipeline_handle: Arc<Mutex<Option<PipelineHandle>>>,
-     pub source_meta_cache: Arc<Mutex<Option<SensorMeta>>>,
-     pub broker: Arc<WebSocketBroker>,
-     pub config_broker: Arc<ConfigBroker>,
-     pub broker_shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
-     pub websocket_sender: broadcast::Sender<Arc<BrokerMessage>>,
-     pub driver: Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>>,
- }
+
+use sensors::types::AdcDriver;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pipelines: Arc<Mutex<HashMap<String, PathBuf>>>,
+    pub sse_tx: broadcast::Sender<String>,
+    pub event_tx: Sender<PipelineEvent>,
+    pub pipeline_handle: Arc<Mutex<Option<PipelineHandle>>>,
+    pub source_meta_cache: Arc<Mutex<Option<SensorMeta>>>,
+    pub broker: Arc<WebSocketBroker>,
+    pub config_broker: Arc<ConfigBroker>,
+    pub broker_shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    pub websocket_sender: broadcast::Sender<Arc<BrokerMessage>>,
+    pub driver: Option<Arc<tokio::sync::Mutex<Box<dyn AdcDriver + Send>>>>,
+}
 
 impl FromRef<AppState> for Arc<WebSocketBroker> {
     fn from_ref(state: &AppState) -> Self {
@@ -104,7 +102,10 @@ pub async fn start_pipeline_handler(
 
     // --- Check if a pipeline is already running ---
     if handle_guard.is_some() {
-        tracing::info!("Request to start pipeline '{}', but a pipeline is already running.", pipeline_id);
+        tracing::info!(
+            "Request to start pipeline '{}', but a pipeline is already running.",
+            pipeline_id
+        );
         return (StatusCode::OK, "Pipeline is already running.").into_response();
     }
 
@@ -167,7 +168,6 @@ pub async fn start_pipeline_handler(
     };
 
     let (executor, _fatal_error_rx, control_bus, mut producer_txs) = Executor::new(graph);
-
 
     // Store the handle to the new pipeline
     *handle_guard = Some(PipelineHandle {
@@ -234,7 +234,6 @@ pub async fn update_pipeline_handler(
     }
 }
 
-
 pub async fn control_handler(
     State(state): State<AppState>,
     Json(payload): Json<ControlCommand>,
@@ -286,7 +285,9 @@ pub struct SetDriverConfigPayload {
     pub target_stage: String,
 }
 
-fn default_eeg_source_name() -> String { "eeg_source".to_string() }
+fn default_eeg_source_name() -> String {
+    "eeg_source".to_string()
+}
 
 /// Applies a driver configuration to the running pipeline by forwarding a SetParameter
 /// to the eeg_source stage. Returns 202 on success dispatch.
@@ -294,7 +295,10 @@ pub async fn set_config_handler(
     State(state): State<AppState>,
     Json(payload): Json<SetDriverConfigPayload>,
 ) -> impl IntoResponse {
-    tracing::info!("POST /api/set-config -> forwarding SetParameter to '{}'", payload.target_stage);
+    tracing::info!(
+        "POST /api/set-config -> forwarding SetParameter to '{}'",
+        payload.target_stage
+    );
 
     if let Some(ref mut handle) = *state.pipeline_handle.lock().await {
         let params = json!({ "driver": payload.driver });
@@ -338,21 +342,33 @@ pub async fn save_config_handler(State(state): State<AppState>) -> impl IntoResp
         let map = state.pipelines.lock().await;
         match map.get(&pipeline_id) {
             Some(p) => p.clone(),
-            None => return (StatusCode::NOT_FOUND, "Pipeline configuration not found").into_response(),
+            None => {
+                return (StatusCode::NOT_FOUND, "Pipeline configuration not found").into_response()
+            }
         }
     };
 
     // Serialize and write
     match serde_yaml::to_string(&config) {
         Ok(yaml) => match std::fs::write(&path, yaml) {
-            Ok(_) => (StatusCode::OK, format!("Saved runtime config to {}", path.display())).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write YAML: {}", e)).into_response(),
+            Ok(_) => (
+                StatusCode::OK,
+                format!("Saved runtime config to {}", path.display()),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to write YAML: {}", e),
+            )
+                .into_response(),
         },
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize runtime config: {}", e)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to serialize runtime config: {}", e),
+        )
+            .into_response(),
     }
 }
-
-
 
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -390,7 +406,10 @@ pub async fn sse_handler(
                 tracing::error!("SSE broadcast stream error: {}", e);
             }
             // Use the correct error enum from tokio-stream
-            futures::future::ready(!matches!(res, Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_))))
+            futures::future::ready(!matches!(
+                res,
+                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(_))
+            ))
         })
         .map(|res| Ok(Event::default().data(res.expect("Lagged errors are filtered out"))));
 
@@ -415,8 +434,5 @@ pub fn create_router() -> Router<AppState> {
         .route("/api/set-config", post(set_config_handler))
         .route("/api/save-config", post(save_config_handler))
         .route("/api/events", get(sse_handler))
-        .route(
-            "/ws/config",
-            get(crate::config::config_websocket_handler),
-        )
+        .route("/ws/config", get(crate::config::config_websocket_handler))
 }

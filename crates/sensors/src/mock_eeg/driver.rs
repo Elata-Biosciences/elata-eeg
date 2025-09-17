@@ -1,12 +1,12 @@
-use std::sync::{Arc, Mutex};
+use lazy_static::lazy_static;
+use log::{debug, info};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use log::{info, debug};
-use lazy_static::lazy_static;
 
-use crate::types::{AdcConfig, DriverStatus, DriverError};
-use super::mock_data_generator::{gen_realistic_eeg_data};
+use super::mock_data_generator::gen_realistic_eeg_data;
+use crate::types::{AdcConfig, DriverError, DriverStatus};
 use eeg_types::SensorError;
 
 // Static hardware lock to simulate real hardware access constraints
@@ -34,12 +34,13 @@ struct MockInner {
 impl MockDriver {
     pub fn new(config: AdcConfig) -> Result<Self, DriverError> {
         // Try to acquire the hardware lock to simulate real hardware access constraints
-        let mut hardware_in_use = HARDWARE_LOCK.lock()
+        let mut hardware_in_use = HARDWARE_LOCK
+            .lock()
             .map_err(|_| DriverError::Other("Failed to acquire hardware lock".to_string()))?;
 
         if *hardware_in_use {
             return Err(DriverError::HardwareNotFound(
-                "Hardware already in use by another driver instance".to_string()
+                "Hardware already in use by another driver instance".to_string(),
             ));
         }
 
@@ -56,7 +57,9 @@ impl MockDriver {
 
         let chip_config = config.chips.get(0);
         let default_channels = vec![];
-        let channels = chip_config.map(|c| &c.channels).unwrap_or(&default_channels);
+        let channels = chip_config
+            .map(|c| &c.channels)
+            .unwrap_or(&default_channels);
 
         if channels.is_empty() {
             *hardware_in_use = false;
@@ -86,7 +89,6 @@ impl MockDriver {
             }
         }
 
-
         let populated_config = config.clone();
 
         let inner = MockInner {
@@ -114,8 +116,12 @@ impl crate::types::AdcDriver for MockDriver {
         let mut inner = self.inner.lock().unwrap();
         inner.running = true;
         inner.status = DriverStatus::Running;
-        inner.base_timestamp =
-            Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64);
+        inner.base_timestamp = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        );
         inner.sample_count = 0;
         Ok(())
     }
@@ -155,7 +161,8 @@ impl crate::types::AdcDriver for MockDriver {
             }
         }
 
-        let sleep_time = Duration::from_millis((batch_size as u64 * 1000) / config.sample_rate as u64);
+        let sleep_time =
+            Duration::from_millis((batch_size as u64 * 1000) / config.sample_rate as u64);
         let sleep_interval = Duration::from_millis(10); // Check for stop signal every 10ms
         let num_intervals = (sleep_time.as_millis() / sleep_interval.as_millis()) as u64;
 
@@ -165,7 +172,6 @@ impl crate::types::AdcDriver for MockDriver {
             }
             thread::sleep(sleep_interval);
         }
-
 
         Ok((batch_buffer, base_timestamp, config))
     }
@@ -188,7 +194,9 @@ impl crate::types::AdcDriver for MockDriver {
 
         let chip_config = config.chips.get(0);
         let default_channels = vec![];
-        let channels = chip_config.map(|c| &c.channels).unwrap_or(&default_channels);
+        let channels = chip_config
+            .map(|c| &c.channels)
+            .unwrap_or(&default_channels);
 
         if channels.is_empty() {
             return Err(DriverError::ConfigurationError(

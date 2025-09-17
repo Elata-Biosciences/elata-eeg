@@ -5,8 +5,8 @@ use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use crate::{
-    data::RtPacket,
     daemon_protocol::MetaUpdateMsg,
+    data::RtPacket,
     error::StageError,
     registry::StageFactory,
     stage::{Stage, StageContext, StageInitCtx},
@@ -35,11 +35,9 @@ impl Stage for WebsocketSink {
     ) -> Result<Vec<(String, Arc<RtPacket>)>, StageError> {
         // 1. Determine the packet type and get header/samples.
         let (header, samples_bytes, packet_type) = match &*packet {
-            RtPacket::Voltage(data) => (
-                &data.header,
-                bytemuck::cast_slice(&data.samples),
-                "Voltage",
-            ),
+            RtPacket::Voltage(data) => {
+                (&data.header, bytemuck::cast_slice(&data.samples), "Voltage")
+            }
             RtPacket::VoltageF32(data) => (
                 &data.header,
                 bytemuck::cast_slice(&data.samples),
@@ -95,8 +93,7 @@ impl Stage for WebsocketSink {
 
         // 4. Construct the final binary payload
         // [u32 json_len][json_header][samples]
-        let mut binary_payload =
-            Vec::with_capacity(4 + header_bytes.len() + samples_bytes.len());
+        let mut binary_payload = Vec::with_capacity(4 + header_bytes.len() + samples_bytes.len());
         binary_payload.extend_from_slice(&header_len.to_be_bytes()); // Use big-endian for network byte order
         binary_payload.extend_from_slice(header_bytes);
         binary_payload.extend_from_slice(samples_bytes);
@@ -121,7 +118,8 @@ impl StageFactory for WebsocketSinkFactory {
         &self,
         config: &crate::config::StageConfig,
         ctx: &StageInitCtx,
-    ) -> std::result::Result<(Box<dyn Stage>, Option<flume::Receiver<Arc<RtPacket>>>), StageError> {
+    ) -> std::result::Result<(Box<dyn Stage>, Option<flume::Receiver<Arc<RtPacket>>>), StageError>
+    {
         let params_value = serde_json::to_value(&config.params)
             .map_err(|e| StageError::BadConfig(e.to_string()))?;
         let sink_params: WebsocketSinkParams = serde_json::from_value(params_value)

@@ -37,13 +37,12 @@ async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], 9999));
     let listener = TcpListener::bind(&addr).await.unwrap();
     info!("listening on {}", addr);
-    axum::serve(listener, app.into_make_service()).await.unwrap();
+    axum::serve(listener, app.into_make_service())
+        .await
+        .unwrap();
 }
 
-async fn websocket_handler(
-    ws: WebSocketUpgrade,
-    State(_state): State<AppState>,
-) -> Response {
+async fn websocket_handler(ws: WebSocketUpgrade, State(_state): State<AppState>) -> Response {
     info!("WebSocket upgrade request received");
     ws.on_upgrade(handle_socket)
 }

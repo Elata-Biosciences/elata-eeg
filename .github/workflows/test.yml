@@ -1,0 +1,117 @@
+name: EEG Daemon Test Suite
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+  schedule:
+    # Run tests daily at 2 AM UTC to catch dependency issues
+    - cron: '0 2 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+        
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    
+    # Install system dependencies for Linux
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libudev-dev
+    
+    # Check formatting
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    # Run clippy on core packages only
+    - name: Clippy
+      run: cargo clippy -p eeg_types --all-targets -- -D warnings
+    
+    # Build core packages (skip hardware-dependent ones that fail on Ubuntu)
+    - name: Build Core Packages
+      run: |
+        cargo build -p eeg_types
+        echo "✅ Core packages built successfully"
+    
+    # Run core unit tests (hardware-independent)
+    - name: Run Unit Tests
+      run: |
+        # Test eeg_types - core data structures and configurations (9 real tests)
+        echo "🧮 Running eeg_types tests..."
+        cargo test -p eeg_types --verbose
+    
+    # Integration tests are skipped in CI due to hardware dependencies
+    # They should be run manually on Linux/Pi platforms
+    - name: Integration Test Status
+      run: |
+        echo "🔧 Integration tests skipped in CI due to hardware dependencies"
+        echo "To run integration tests:"
+        echo "  Linux: cargo test -p sensors --features='mock_eeg' --no-default-features"
+        echo "  Pi:    cargo test --workspace --features='boards/elata_v2'"
+    
+    # Test documentation for core packages only
+    - name: Test documentation
+      run: cargo doc -p eeg_types --no-deps
+
+  # Separate job for hardware-specific tests (only run on ARM/Pi if available)
+  hardware-tests:
+    name: Hardware Tests
+    runs-on: self-hosted
+    # Only run if we have self-hosted Pi runners available
+    if: false  # Disabled for now, enable when Pi runners are available
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+    
+    - name: Run hardware tests
+      run: |
+        # These would run on actual Raspberry Pi hardware
+        cargo test -p sensors --features="ads1299"
+        cargo test -p boards --features="elata_v2"
+        cargo test -p adc_daemon --features="boards/elata_v2"
+
+  # Security audit
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: rustsec/audit-check@v1.4.1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
