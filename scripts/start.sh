@@ -6,12 +6,24 @@ set -euo pipefail
 
 # Parse flags (default to development mode; use --prod for production)
 PROD=0
-for arg in "$@"; do
-  if [ "$arg" = "--prod" ] || [ "$arg" = "-p" ]; then
-    PROD=1
-  fi
+KIOSK_OS=0
+CONFIG=""
+# Enhanced flag parsing (supports --config PATH)
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prod|-p) PROD=1; shift ;;
+    --kiosk-os) KIOSK_OS=1; shift ;;
+    --config|-c) CONFIG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
 done
 
+
+# Build daemon args from flags
+DAEMON_ARGS=()
+if [ -n "$CONFIG" ]; then
+  DAEMON_ARGS+=(--config "$CONFIG")
+fi
 
 # Resolve current user home and sudo
 USER_HOME="${HOME:-/home/$USER}"
@@ -43,41 +55,63 @@ echo "  $(grep -E 'greeter-session|user-session|autologin-session' /etc/lightdm/
 
 # Enable and start services with proper delays
 echo "🔄 Enabling and starting daemon and kiosk services (if installed)..."
+STARTED_VIA="unknown"
 if service_exists "daemon.service"; then
   $SUDO systemctl enable daemon
   mysleep
   $SUDO systemctl start daemon
+  STARTED_VIA="systemd"
 else
   echo "ℹ️ daemon.service not found; attempting manual start..."
   if pgrep -f "eeg_daemon" >/dev/null 2>&1; then
     echo "✅ eeg_daemon process already running"
+    STARTED_VIA="manual"
   else
     if [ -x "/usr/local/bin/eeg_daemon" ]; then
       echo "▶️ Starting /usr/local/bin/eeg_daemon"
-      nohup /usr/local/bin/eeg_daemon > /tmp/eeg_daemon.log 2>&1 &
+      nohup /usr/local/bin/eeg_daemon "${DAEMON_ARGS[@]}" > /tmp/eeg_daemon.log 2>&1 &
       DAEMON_PID=$!
+      STARTED_VIA="manual"
     elif [ -x "$REPO_ROOT/target/release/eeg_daemon" ]; then
       echo "▶️ Starting $REPO_ROOT/target/release/eeg_daemon"
-      nohup "$REPO_ROOT/target/release/eeg_daemon" > /tmp/eeg_daemon.log 2>&1 &
+      nohup "$REPO_ROOT/target/release/eeg_daemon" "${DAEMON_ARGS[@]}" > /tmp/eeg_daemon.log 2>&1 &
       DAEMON_PID=$!
+      STARTED_VIA="manual"
     elif [ -x "$REPO_ROOT/target/debug/eeg_daemon" ]; then
       echo "▶️ Starting $REPO_ROOT/target/debug/eeg_daemon"
-      nohup "$REPO_ROOT/target/debug/eeg_daemon" > /tmp/eeg_daemon.log 2>&1 &
+      nohup "$REPO_ROOT/target/debug/eeg_daemon" "${DAEMON_ARGS[@]}" > /tmp/eeg_daemon.log 2>&1 &
       DAEMON_PID=$!
+      STARTED_VIA="manual"
     elif bin_exists cargo; then
       echo "▶️ Building and starting daemon via cargo (dev)"
-      (cd "$REPO_ROOT" && nohup cargo run --bin eeg_daemon > /tmp/eeg_daemon.log 2>&1 & echo $! > /tmp/eeg_daemon.pid)
+      (cd "$REPO_ROOT" && nohup cargo run --bin eeg_daemon -- "${DAEMON_ARGS[@]}" > /tmp/eeg_daemon.log 2>&1 & echo $! > /tmp/eeg_daemon.pid)
       DAEMON_PID=$(cat /tmp/eeg_daemon.pid 2>/dev/null || true)
+      STARTED_VIA="manual"
     else
       echo "❌ Could not find eeg_daemon binary and cargo is not installed."
     fi
   fi
-  # Wait for daemon to respond on port 9000
-  if ! curl -sf http://127.0.0.1:9000/api/pipelines >/dev/null; then
-    echo "⏳ Waiting for daemon to become ready on :9000"
+fi
+
+# Wait for daemon to respond on port 9000 (/api/state)
+if ! curl -sf http://127.0.0.1:9000/api/state >/dev/null; then
+  echo "⏳ Waiting for daemon to become ready on :9000 (/api/state)"
+  READY=0
+  for i in {1..40}; do
+    if curl -sf http://127.0.0.1:9000/api/state >/dev/null; then
+      echo "✅ Daemon is responding (attempt $i)"
+      READY=1
+      break
+    fi
+    mysleep 0.5
+  done
+  if [ "$READY" -ne 1 ] && [ "$STARTED_VIA" = "systemd" ] && bin_exists cargo; then
+    echo "⚠️ Daemon not responding via systemd. Falling back to dev mode: cargo run --bin eeg_daemon"
+    $SUDO systemctl stop daemon || true
+    (cd "$REPO_ROOT" && nohup cargo run --bin eeg_daemon -- "${DAEMON_ARGS[@]}" > /tmp/eeg_daemon.log 2>&1 & echo $! > /tmp/eeg_daemon.pid)
     for i in {1..40}; do
-      if curl -sf http://127.0.0.1:9000/api/pipelines >/dev/null; then
-        echo "✅ Daemon is responding (attempt $i)"
+      if curl -sf http://127.0.0.1:9000/api/state >/dev/null; then
+        echo "✅ Daemon is responding after cargo fallback (attempt $i)"
         break
       fi
       mysleep 0.5
@@ -108,8 +142,25 @@ else
       echo "▶️ Starting kiosk (next start) in background..."
       (cd "$KIOSK_DIR" && nohup npm start > /tmp/kiosk.log 2>&1 & echo $! > /tmp/kiosk.pid)
     else
-      echo "⚙️ Starting kiosk (development) with Next.js dev server..."
-      (cd "$KIOSK_DIR" && nohup npm run dev > /tmp/kiosk.log 2>&1 & echo $! > /tmp/kiosk.pid)
+      # Always use port 3000 for dev; kill any existing process occupying it
+      KIOSK_PORT=3000
+      if curl -sS --max-time 1 http://127.0.0.1:${KIOSK_PORT} >/dev/null; then
+        echo "⚠️ Port ${KIOSK_PORT} is busy; attempting to free it..."
+        if bin_exists fuser; then
+          $SUDO fuser -k -n tcp ${KIOSK_PORT} || true
+        elif bin_exists lsof; then
+          PIDS=$(lsof -ti tcp:${KIOSK_PORT} || true)
+          if [ -n "$PIDS" ]; then $SUDO kill -9 $PIDS || true; fi
+        elif bin_exists ss; then
+          PIDS=$(ss -lptn 'sport = :${KIOSK_PORT}' 2>/dev/null | awk -F',' '/pid=/ {for(i=1;i<=NF;i++){if($i ~ /pid=/){gsub(/pid=/,"",$i); gsub(/\).*/,"",$i); print $i}}}' | tr '\n' ' ')
+          if [ -n "$PIDS" ]; then $SUDO kill -9 $PIDS || true; fi
+        else
+          echo "⚠️ Could not detect fuser/lsof/ss; skipping auto-kill."
+        fi
+        mysleep 1
+      fi
+      echo "⚙️ Starting kiosk (development) via custom server (server.js with proxy) on :$KIOSK_PORT..."
+      (cd "$KIOSK_DIR" && PORT=$KIOSK_PORT nohup node server.js > /tmp/kiosk.log 2>&1 & echo $! > /tmp/kiosk.pid)
     fi
     KIOSK_PID=$(cat /tmp/kiosk.pid 2>/dev/null || true)
     echo "ℹ️ kiosk PID: ${KIOSK_PID:-unknown} (logs: /tmp/kiosk.log)"
@@ -121,8 +172,8 @@ echo "✅ Service enable/start step complete"
 echo "⏳ Waiting for network and kiosk service..."
 READY=0
 for i in {1..120}; do
-    if curl -sf http://127.0.0.1:3000 >/dev/null; then
-        echo "✅ Kiosk web service is responding (attempt $i)"
+    if curl -sf http://127.0.0.1:${KIOSK_PORT:-3000} >/dev/null; then
+        echo "✅ Kiosk web service is responding on :${KIOSK_PORT:-3000} (attempt $i)"
         READY=1
         break
     fi
@@ -135,6 +186,29 @@ if [ "$READY" -ne 1 ]; then
   echo "❌ Kiosk did not respond on :3000 within timeout. Tail of /tmp/kiosk.log (if exists):"
   tail -n 40 /tmp/kiosk.log 2>/dev/null || true
 fi
+
+# Verify kiosk can reach daemon via proxy (/api/state)
+if [ "$READY" -eq 1 ]; then
+  echo "⏳ Verifying kiosk->daemon proxy (/api/state)"
+  PROXY_OK=0
+  for i in {1..30}; do
+    if curl -sf http://127.0.0.1:${KIOSK_PORT:-3000}/api/state >/dev/null; then
+      echo "✅ Kiosk proxy to daemon is responding on :${KIOSK_PORT:-3000} (attempt $i)"
+      PROXY_OK=1
+      break
+    fi
+    mysleep 1
+  done
+  if [ "$PROXY_OK" -ne 1 ]; then
+    echo "⚠️ Kiosk responded, but /api/state via kiosk proxy did not respond within timeout"
+    echo "   Check that the daemon is running and listening on :9000, and kiosk proxy config is correct."
+  fi
+fi
+
+
+# Optional kiosk-OS (autostart/browser) changes
+if [ "$KIOSK_OS" -eq 1 ]; then
+  echo "Enabling kiosk-OS browser/autostart changes (--kiosk-os)"
 
 
 
@@ -258,6 +332,10 @@ if [ -n "$BROWSER" ]; then
   echo "Chromium started with PID: ${CHROMIUM_PID:-unknown}"
 else
   echo "ℹ️ Chromium/Chrome not found; skipping browser launch."
+fi
+
+else
+  echo "Skipping kiosk-OS browser/autostart changes (--kiosk-os not set)"
 fi
 
 # Check if Chromium is actually running after a short delay

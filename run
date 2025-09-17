@@ -2,7 +2,16 @@
 
 SCRIPT_DIR=scripts
 
+case $1 in
+  i) COMMAND=install ;;
+  u) COMMAND=uninstall ;;
+  r) COMMAND=rebuild ;;
+  t) COMMAND=test ;;
+  d) COMMAND=diagnostics ;;
+  *) COMMAND=$1;
+esac
+
 while [ $# -gt 0 ]; do
-  $SCRIPT_DIR/$1.sh
+  bash "$SCRIPT_DIR/$COMMAND.sh"
   shift
 done

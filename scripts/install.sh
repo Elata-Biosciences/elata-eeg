@@ -155,12 +155,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/eeg_daemon
+ExecStart=/usr/local/bin/eeg_daemon --config $REPO_PATH/pipelines/default.yaml
 Restart=always
 User=$CURRENT_USER
 Group=$CURRENT_USER
 Environment=RUST_LOG=info
-WorkingDirectory=$REPO_PATH/daemon
+WorkingDirectory=$REPO_PATH
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=rust_daemon
