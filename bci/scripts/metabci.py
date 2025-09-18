@@ -70,7 +70,7 @@ DEFAULT_CHANNELS_HINT = ["ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8"]
 BANDS = [(4, 7), (8, 12), (13, 30), (30, 45)]  # theta, mu(alpha), beta, low-gamma
 WINDOW_SECONDS = 1.0
 HOP_SECONDS = 0.25
-TRAIN_TOTAL_MIN = 10
+TRAIN_TOTAL_MIN = 2
 BLOCK_SECONDS = 5.0
 
 @dataclass
