@@ -1,3 +1,6 @@
+## cwt_live.py
+`python cwt_live.py --host raspberrypi.local --topic eeg_voltage --epoch 1 --fs 250 --window 12`
+
 ## print_data.py
 `python print_data.py`
 
