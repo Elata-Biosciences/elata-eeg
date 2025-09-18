@@ -12,7 +12,7 @@ stages:
         sample_rate: 250
         drdy_pin: 25
         vref: 4.5
-        gain: 24.0
+        gain: 12.0
         chips:
           - channels: [0, 1, 2, 3, 4, 5, 6, 7]  # Single chip with 8 channels
       batch_size: 32
