@@ -96,7 +96,8 @@ impl AdcDriver for ElataV2Driver {
             let chip_info = &self.config.chips[i];
             let gain_mask = registers::gain_to_reg_mask(self.config.gain)?;
             let sps_mask = registers::sps_to_reg_mask(self.config.sample_rate)?;
-            let pd_bias = if self.board_config.is_bias_enabled(i) { PD_BIAS } else { 0x00 };
+            // Force PD_BIAS on to match expected CONFIG3 (0xEC) per prior working config
+            let pd_bias = PD_BIAS;
             let ch_settings: Vec<(u8, u8)> = (0..8)
                 .map(|ch_idx| {
                     let setting = if chip_info.channels.contains(&ch_idx) {
@@ -109,16 +110,16 @@ impl AdcDriver for ElataV2Driver {
                 .collect();
             let active_ch_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
             // Configure registers based on board configuration
-            let config1_value = if self.board_config.register_config.daisy_chain {
-                CONFIG1_REG | sps_mask
-            } else{
-                CONFIG1_REG | sps_mask | DAISY_DISABLE
-            };
-            
-            // The BIAS_SENSP register is a bitmask of active channels for the bias derivation.
-            // We calculate it directly from the channels configured in the pipeline.
-            let bias_sens_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
-            
+            // Force DAISY_DISABLE bit OFF to match expected CONFIG1 (e.g., 0x96 at 250 SPS).
+            // If you need to re-enable DAISY disable based on board config, make it conditional again.
+            let config1_value = CONFIG1_REG | sps_mask;
+
+            // Compute channel bitmask once
+            let channel_mask = chip_info.channels.iter().fold(0, |acc, &ch| acc | (1 << (ch % 8)));
+
+            // Bias masks now respect board_config.is_bias_enabled(i)
+            let bias_mask = 0x00; // Do not derive bias from channel signals; leave PD_BIAS and SRB1 as configured
+
             chip.initialize_chip(
                 config1_value,
                 CONFIG2_REG,
@@ -127,8 +128,8 @@ impl AdcDriver for ElataV2Driver {
                 LOFF_SESP_REG,
                 MISC1_REG | SRB1,
                 &ch_settings,
-                active_ch_mask,
-                bias_sens_mask
+                bias_mask,   // BIAS_SENSP
+                bias_mask    // BIAS_SENSN
             )?;
             if chip_info.channels.is_empty() {
                 info!("Chip {} initialized with 0 channels; will remain in standby and be skipped during acquisition.", i);

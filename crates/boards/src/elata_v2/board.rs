@@ -40,10 +40,12 @@ pub struct RegisterConfig {
 
 impl RegisterConfig {
     /// Create a new register configuration with default values
+    /// Default enables PD_BIAS on the first chip to match prior working configs.
+    /// BIAS_SENSP/N masks are still controlled in the driver (currently forced to 0x00).
     pub fn new() -> Self {
         Self {
             daisy_chain: false,
-            bias_per_chip: vec![true], // Enable bias only on the first chip by default
+            bias_per_chip: vec![true], // Enable bias by default on chip 0
         }
     }
 }

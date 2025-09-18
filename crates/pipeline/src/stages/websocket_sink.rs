@@ -45,6 +45,13 @@ impl Stage for WebsocketSink {
                 bytemuck::cast_slice(&data.samples),
                 "VoltageF32",
             ),
+            RtPacket::RawI32(data) => (
+                &data.header,
+                // Note: using native-endian zero-copy cast for performance.
+                // Consumers must read i32s in the producer's endianness (Linux ARM is little-endian).
+                bytemuck::cast_slice(&data.samples),
+                "RawI32",
+            ),
             other => {
                 panic!(
                     "websocket_sink received unexpected packet type: {:?}. This indicates a misconfigured pipeline.",

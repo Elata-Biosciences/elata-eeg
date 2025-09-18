@@ -24,28 +24,30 @@ stages:
       - "eeg_source.raw_data"
     outputs: ["voltage_data"]
 
-  - name: "filter"
-    type: "gui_filter"
-    params:
-      high_pass: 16
-      low_pass: 40.0
-      notch: 60.0
-      output: "filtered_data"
-    inputs:
-      - "to_voltage.voltage_data"
-    outputs: ["filtered_data"]
+#  - name: "filter"
+#    type: "gui_filter"
+#    params:
+#      high_pass: 16
+#      low_pass: 40.0
+#      notch: 60.0
+#      output: "filtered_data"
+#    inputs:
+#      - "to_voltage.voltage_data"
+#    outputs: ["filtered_data"]
 
-  - name: "csv_sink"
-    type: "csv_sink"
-    params:
-      path: "e2e_test_output.csv"
-      max_recording_length_minutes: 60
-    inputs:
-      - "to_voltage.voltage_data"
+#  - name: "csv_sink"
+#    type: "csv_sink"
+#    params:
+#      path: "e2e_test_output.csv"
+#      max_recording_length_minutes: 60
+#    inputs:
+#      - "to_voltage.voltage_data"
 
   - name: "websocket_sink"
     type: "websocket_sink"
     params:
       topic: "eeg_voltage"
     inputs:
-      - "filter.filtered_data"
+#      - "eeg_source.raw_data"
+       - "to_voltage.voltage_data"
+#      - "filter.filtered_data"
