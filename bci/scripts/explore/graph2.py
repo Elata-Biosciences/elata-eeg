@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py
+# main.py — 8‑channel live FFT + filtered + raw (single‑channel view optional)
 import asyncio
 import json
 import threading
@@ -65,7 +65,7 @@ def extract_names(header: Dict[str, Any], meta: Optional[Dict[str, Any]], num_ch
     return names
 
 # ----------------------------
-# Live triple plotter (FFT + filtered + raw)
+# Live plotter (FFT + filtered + raw)
 # ----------------------------
 
 class LiveFFTAndSignal:
@@ -79,12 +79,14 @@ class LiveFFTAndSignal:
         bp_lo: float = 16.0,
         bp_hi: float = 40.0,
         bp_order: int = 4,
+        show_all: bool = True,
     ):
         self.state = state
         self.topic = topic
         self.channel = max(0, initial_channel)
         self.fmax = fmax
         self.use_log10_uv2_per_hz = use_log10_uv2_per_hz
+        self.show_all = show_all
 
         # Band-pass params (will redesign on fs changes)
         self.bp_lo = bp_lo
@@ -93,13 +95,22 @@ class LiveFFTAndSignal:
         self._fs_for_sos = None
         self._sos = None  # designed lazily
 
-        # Figure with three stacked axes: FFT (top), filtered (mid), raw (bottom)
-        self.fig, (self.ax_fft, self.ax_sig, self.ax_raw) = plt.subplots(
-            3, 1, figsize=(9, 9.5), height_ratios=[1.0, 1.1, 1.1], sharex=False
-        )
-        (self.line_fft,) = self.ax_fft.plot([], [], lw=1.5)
-        (self.line_sig,) = self.ax_sig.plot([], [], lw=1.0)
-        (self.line_raw,) = self.ax_raw.plot([], [], lw=0.9)
+        if self.show_all:
+            # 3 stacked axes; each axis will have N lines (one per channel)
+            self.fig, (self.ax_fft, self.ax_sig, self.ax_raw) = plt.subplots(
+                3, 1, figsize=(10, 10.5), height_ratios=[1.0, 1.1, 1.1], sharex=False
+            )
+            self.lines_fft: List[Any] = []
+            self.lines_sig: List[Any] = []
+            self.lines_raw: List[Any] = []
+        else:
+            # Single-channel view (like original)
+            self.fig, (self.ax_fft, self.ax_sig, self.ax_raw) = plt.subplots(
+                3, 1, figsize=(9, 9.5), height_ratios=[1.0, 1.1, 1.1], sharex=False
+            )
+            (self.line_fft,) = self.ax_fft.plot([], [], lw=1.5)
+            (self.line_sig,) = self.ax_sig.plot([], [], lw=1.0)
+            (self.line_raw,) = self.ax_raw.plot([], [], lw=0.9)
 
         # Axis labels/grid
         self.ax_fft.set_xlabel("Frequency (Hz)")
@@ -122,6 +133,8 @@ class LiveFFTAndSignal:
 
     # ---------- UI ----------
     def on_key(self, event):
+        if self.show_all:
+            return  # channel keys only relevant in single‑channel mode
         if event.key in ("left", "j"):
             with self.state.lock:
                 self.channel = (self.channel - 1) % max(1, self.state.num_channels)
@@ -185,66 +198,161 @@ class LiveFFTAndSignal:
         except Exception:
             return x
 
+    # ---------- helpers for all‑channels mode ----------
+    def _ensure_lines_for_all(self, nch: int):
+        # Create line objects to match channel count
+        def ensure_list(ax, storage: List[Any], lw: float):
+            if len(storage) == nch:
+                return
+            # remove old
+            for ln in storage:
+                try:
+                    ln.remove()
+                except Exception:
+                    pass
+            storage.clear()
+            # create new
+            for _ in range(nch):
+                (ln,) = ax.plot([], [], lw=lw)
+                storage.append(ln)
+        self._ensure_axis_limits_initialized()
+        ensure_list(self.ax_fft, self.lines_fft, 1.0)
+        ensure_list(self.ax_sig, self.lines_sig, 0.9)
+        ensure_list(self.ax_raw, self.lines_raw, 0.8)
+
+    def _ensure_axis_limits_initialized(self):
+        # Prevent autoscale weirdness on first frames
+        for ax in (self.ax_fft, self.ax_sig, self.ax_raw):
+            ax.set_xlim(0, 1)
+            ax.set_ylim(-1, 1)
+
     # ---------- Animation frame ----------
     def update(self, _frame):
-        # Snapshot under lock
         with self.state.lock:
             fs = float(self.state.fs)
             nch = self.state.num_channels
             names = self.state.chan_names or [f"ch{i+1}" for i in range(nch)]
+            bufs = [np.array(self.state.buffers[i], dtype=np.float64) if self.state.buffers else np.array([])
+                    for i in range(nch)]
+
+        if self.show_all:
+            self._ensure_lines_for_all(nch)
+
+            # FFT per channel
+            ymins, ymaxs = [], []
+            freqs_ref = None
+            for i, buf in enumerate(bufs):
+                freqs, Y = self._compute_psd_log10_uv2_per_hz(buf, fs)
+                if freqs_ref is None:
+                    freqs_ref = freqs
+                mask = (freqs <= self.fmax) if self.fmax is not None else np.ones_like(freqs, dtype=bool)
+                self.lines_fft[i].set_data(freqs[mask], Y[mask])
+                finite = np.isfinite(Y[mask])
+                if finite.any():
+                    ymins.append(np.nanmin(Y[mask][finite]))
+                    ymaxs.append(np.nanmax(Y[mask][finite]))
+            if freqs_ref is not None and freqs_ref.size > 1:
+                xmax = (self.fmax if self.fmax is not None else freqs_ref[-1])
+                self.ax_fft.set_xlim(0, max(1e-3, xmax))
+                if ymins and ymaxs:
+                    ymin, ymax = float(np.nanmin(ymins)), float(np.nanmax(ymaxs))
+                    if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
+                        pad = 0.1 * (ymax - ymin)
+                        self.ax_fft.set_ylim(ymin - pad, ymax + pad)
+
+            # Filtered + Raw per channel (stacked with offsets so curves don't overlap)
+            # Compute a robust per‑axis scale across all channels
+            def set_lines(ax, lines, arrs):
+                # Determine vertical offsets based on per‑channel RMS
+                rms = np.array([np.sqrt(np.mean(a**2)) if a.size else 0.0 for a in arrs])
+                base = np.median(rms[rms>0]) if (rms>0).any() else 1.0
+                step = 4.0 * base  # spacing between channels
+                ymin, ymax = +np.inf, -np.inf
+                for i, a in enumerate(arrs):
+                    if a.size:
+                        t = np.arange(a.size) / fs
+                        off = i * step
+                        lines[i].set_data(t, a + off)
+                        ymin = min(ymin, float(np.min(a + off)))
+                        ymax = max(ymax, float(np.max(a + off)))
+                    else:
+                        lines[i].set_data([], [])
+                if not np.isfinite(ymin) or not np.isfinite(ymax):
+                    ymin, ymax = -1.0, 1.0
+                ax.set_xlim(0, max(1.0, *( (np.arange(arrs[0].size)/fs).tolist() if arrs and arrs[0].size else [1.0] )))
+                pad = 0.05 * (ymax - ymin + 1e-12)
+                ax.set_ylim(ymin - pad, ymax + pad)
+
+            # Filtered signals
+            y_filts = [self._filter_signal(b, fs) for b in bufs]
+            set_lines(self.ax_sig, self.lines_sig, y_filts)
+
+            # Raw signals
+            set_lines(self.ax_raw, self.lines_raw, bufs)
+
+            unit_str = "log10(µV²/Hz)" if self.use_log10_uv2_per_hz else "µV²/Hz"
+            self.ax_fft.set_title(f"Live FFT — {self.topic} | fs={fs:.2f} Hz | {nch} channels | {unit_str}")
+            self.ax_sig.set_title(f"Filtered ({self.bp_lo:.1f}–{self.bp_hi:.1f} Hz, order {self.bp_order}) — stacked by channel")
+            self.ax_raw.set_title("Raw (unfiltered) — stacked by channel")
+
+            return tuple(self.lines_fft + self.lines_sig + self.lines_raw)
+
+        else:
+            # single‑channel path (original behavior)
             if self.channel >= nch:
                 self.channel = 0
-            buf = np.array(self.state.buffers[self.channel], dtype=np.float64) if self.state.buffers else np.array([])
+            buf = bufs[self.channel] if nch else np.array([])
 
-        # FFT (top) as log10(µV²/Hz) or linear µV²/Hz
-        freqs, Y = self._compute_psd_log10_uv2_per_hz(buf, fs)
-        mask = (freqs <= self.fmax) if self.fmax is not None else np.ones_like(freqs, dtype=bool)
-        self.line_fft.set_data(freqs[mask], Y[mask])
+            # FFT (top)
+            freqs, Y = self._compute_psd_log10_uv2_per_hz(buf, fs)
+            mask = (freqs <= self.fmax) if self.fmax is not None else np.ones_like(freqs, dtype=bool)
+            self.line_fft.set_data(freqs[mask], Y[mask])
 
-        if freqs.size > 1:
-            xmax = (self.fmax if self.fmax is not None else freqs[-1])
-            self.ax_fft.set_xlim(0, max(1e-3, xmax))
-            finite = np.isfinite(Y[mask])
-            if finite.any():
-                ymin = np.nanmin(Y[mask][finite])
-                ymax = np.nanmax(Y[mask][finite])
-                if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
-                    pad = 0.1 * (ymax - ymin)
-                    self.ax_fft.set_ylim(ymin - pad, ymax + pad)
+            if freqs.size > 1:
+                xmax = (self.fmax if self.fmax is not None else freqs[-1])
+                self.ax_fft.set_xlim(0, max(1e-3, xmax))
+                finite = np.isfinite(Y[mask])
+                if finite.any():
+                    ymin = np.nanmin(Y[mask][finite])
+                    ymax = np.nanmax(Y[mask][finite])
+                    if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
+                        pad = 0.1 * (ymax - ymin)
+                        self.ax_fft.set_ylim(ymin - pad, ymax + pad)
 
-        # Filtered signal (middle)
-        y_filt = self._filter_signal(buf, fs)
-        if y_filt.size > 0:
-            t = np.arange(y_filt.size) / fs
-            self.line_sig.set_data(t, y_filt)
-            self.ax_sig.set_xlim(max(0, t.min()), max(1.0, t.max()))
-            yfinite = y_filt[np.isfinite(y_filt)]
-            if yfinite.size > 0:
-                ypad = 0.1 * (np.max(yfinite) - np.min(yfinite) + 1e-12)
-                self.ax_sig.set_ylim(np.min(yfinite) - ypad, np.max(yfinite) + ypad)
+            # Filtered signal (middle)
+            y_filt = self._filter_signal(buf, fs)
+            if y_filt.size > 0:
+                t = np.arange(y_filt.size) / fs
+                self.line_sig.set_data(t, y_filt)
+                self.ax_sig.set_xlim(max(0, t.min()), max(1.0, t.max()))
+                yfinite = y_filt[np.isfinite(y_filt)]
+                if yfinite.size > 0:
+                    ypad = 0.1 * (np.max(yfinite) - np.min(yfinite) + 1e-12)
+                    self.ax_sig.set_ylim(np.min(yfinite) - ypad, np.max(yfinite) + ypad)
 
-        # Raw signal (bottom)
-        if buf.size > 0:
-            t_raw = np.arange(buf.size) / fs
-            self.line_raw.set_data(t_raw, buf)
-            self.ax_raw.set_xlim(max(0, t_raw.min()), max(1.0, t_raw.max()))
-            rfinite = buf[np.isfinite(buf)]
-            if rfinite.size > 0:
-                rpad = 0.1 * (np.max(rfinite) - np.min(rfinite) + 1e-12)
-                self.ax_raw.set_ylim(np.min(rfinite) - rpad, np.max(rfinite) + rpad)
+            # Raw signal (bottom)
+            if buf.size > 0:
+                t_raw = np.arange(buf.size) / fs
+                self.line_raw.set_data(t_raw, buf)
+                self.ax_raw.set_xlim(max(0, t_raw.min()), max(1.0, t_raw.max()))
+                rfinite = buf[np.isfinite(buf)]
+                if rfinite.size > 0:
+                    rpad = 0.1 * (np.max(rfinite) - np.min(rfinite) + 1e-12)
+                    self.ax_raw.set_ylim(np.min(rfinite) - rpad, np.max(rfinite) + rpad)
 
-        # Titles
-        unit_str = "log10(µV²/Hz)" if self.use_log10_uv2_per_hz else "µV²/Hz"
-        self.ax_fft.set_title(
-            f"Live FFT — {self.topic} | fs={fs:.2f} Hz | "
-            f"chan {self.channel+1}/{nch} ({names[self.channel]}) | {unit_str}"
-        )
-        self.ax_sig.set_title(
-            f"Filtered signal ({self.bp_lo:.1f}–{self.bp_hi:.1f} Hz, order {self.bp_order})"
-        )
-        self.ax_raw.set_title("Raw signal (unfiltered)")
+            # Titles
+            names = self.state.chan_names or [f"ch{i+1}" for i in range(nch)]
+            unit_str = "log10(µV²/Hz)" if self.use_log10_uv2_per_hz else "µV²/Hz"
+            self.ax_fft.set_title(
+                f"Live FFT — {self.topic} | fs={fs:.2f} Hz | "
+                f"chan {self.channel+1}/{nch} ({names[self.channel] if names else 'ch'}) | {unit_str}"
+            )
+            self.ax_sig.set_title(
+                f"Filtered signal ({self.bp_lo:.1f}–{self.bp_hi:.1f} Hz, order {self.bp_order})"
+            )
+            self.ax_raw.set_title("Raw signal (unfiltered)")
 
-        return self.line_fft, self.line_sig, self.line_raw
+            return self.line_fft, self.line_sig, self.line_raw
 
     def show(self):
         plt.tight_layout()
@@ -293,49 +401,59 @@ def run_ws_in_thread(host: str, topic: str, epoch: int, state: SharedState):
 # ----------------------------
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Live FFT + filtered + raw signal plot from streaming EEG WebSocket")
+    ap = argparse.ArgumentParser(description="Live FFT + filtered + raw plot from streaming EEG WebSocket")
     ap.add_argument("--host", default="raspberrypi.local", help="Data host (default: raspberrypi.local)")
     ap.add_argument("--topic", default="eeg_voltage", help="Topic name to subscribe to")
     ap.add_argument("--epoch", type=int, default=1, help="Epoch to subscribe with")
     ap.add_argument("--window", type=float, default=4.0, help="Rolling window length in seconds")
-    ap.add_argument("--channel", type=int, default=0, help="Initial channel index (0-based)")
+    ap.add_argument("--channel", type=int, default=0, help="Initial channel index (0-based; single‑channel mode)")
     ap.add_argument("--fmax", type=float, default=45.0, help="Max frequency to display (Hz). Use large value for full band.")
     ap.add_argument("--lin", action="store_true", help="Use linear µV²/Hz scale instead of log10(µV²/Hz)")
     ap.add_argument("--bp_lo", type=float, default=16.0, help="Band-pass low cut (Hz)")
     ap.add_argument("--bp_hi", type=float, default=40.0, help="Band-pass high cut (Hz)")
     ap.add_argument("--bp_order", type=int, default=4, help="Band-pass Butterworth order")
+    ap.add_argument("--single", action="store_true", help="Single‑channel view (use ←/→ to switch)")
     return ap.parse_args()
+
 
 def main():
     args = parse_args()
 
     state = SharedState(window_secs=args.window)
-    state.ensure_buffers(num_channels=1, fs=state.fs)
+    state.ensure_buffers(num_channels=8, fs=state.fs)  # pre‑allocate 8; will resize if meta says otherwise
 
     # Start WS consumer
     run_ws_in_thread(args.host, args.topic, args.epoch, state)
 
-    # Spin up the plotter
+    # Plotter
     plot = LiveFFTAndSignal(
         state=state,
         topic=args.topic,
         initial_channel=max(0, args.channel),
         fmax=args.fmax,
-        use_log10_uv2_per_hz=not args.lin,  # default is log10(µV²/Hz)
+        use_log10_uv2_per_hz=not args.lin,
         bp_lo=args.bp_lo,
         bp_hi=args.bp_hi,
         bp_order=args.bp_order,
+        show_all=not args.single,
     )
+
+    if args.single:
+        print(
+            "Controls (single‑channel):\n"
+            "  ← / j : previous channel\n"
+            "  → / l : next channel\n"
+        )
     print(
-        "Controls:\n"
-        "  ← / j : previous channel\n"
-        "  → / l : next channel\n"
-        f"  Window: {args.window}s | FFT fmax: {args.fmax} Hz | scale: "
+        f"Window: {args.window}s | FFT fmax: {args.fmax} Hz | scale: "
         f"{'linear µV²/Hz' if args.lin else 'log10(µV²/Hz)'}\n"
-        f"  Band-pass (filtered trace): {args.bp_lo}-{args.bp_hi} Hz (order {args.bp_order})\n"
-        "  Bottom trace shows raw, unfiltered samples.\n"
+        f"Band‑pass (filtered trace): {args.bp_lo}-{args.bp_hi} Hz (order {args.bp_order})\n"
+        f"Mode: {'ALL channels (stacked)' if not args.single else 'Single‑channel'}\n"
+        "Bottom trace shows raw, unfiltered samples.\n"
     )
+
     plot.show()
+
 
 if __name__ == "__main__":
     main()

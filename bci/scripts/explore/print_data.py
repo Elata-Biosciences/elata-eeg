@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-# print_stream.py
+# print_data.py
+from __future__ import annotations
+
 import asyncio
-import numpy as np
+import socket
 from typing import Dict, Any, Optional
 
+import numpy as np
 from ws_client import start_data_ws
 
 async def handle_packet(header: Dict[str, Any], samples: np.ndarray, meta: Optional[Dict[str, Any]]):
@@ -14,16 +17,14 @@ async def handle_packet(header: Dict[str, Any], samples: np.ndarray, meta: Optio
     fs = header.get("fs", "unknown")
     shape = samples.shape
 
-    # Print summary line
     print(f"[{topic}] fs={fs} Hz, samples={shape}")
-
-    # Print first few sample values for inspection
-    # samples is shaped (batch_size, num_channels)
     if shape[0] > 0:
         print("First row:", samples[0, :])
 
 async def main():
     host = "raspberrypi.local"   # change if needed
+    # Resolve to IPv4 to match the TCP probe:
+    host = socket.gethostbyname(host)
     topic = "eeg_voltage"
     epoch = 1
 

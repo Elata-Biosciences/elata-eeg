@@ -2,6 +2,9 @@
 # cwt_live.py — Real-time multi-channel CWT with COI masking + log power + robust scaling
 import argparse
 import asyncio
+import io
+import sys
+import time
 import threading
 from collections import deque
 from typing import Any, Dict, Iterable, Tuple, Optional, List
@@ -117,6 +120,12 @@ def run_plot(
     n_freqs: int,
     use_zscore: bool,
     hp_demean: bool,
+    # NEW: offline replay inputs (stdin .npz)
+    offline_data: Optional[np.ndarray] = None,   # shape (C, T) expected
+    offline_fs: Optional[float] = None,
+    offline_chan_names: Optional[List[str]] = None,
+    replay_speed: float = 1.0,
+    replay_batch: int = 64,
 ):
     # Start with 1 channel until we learn the real count; selection finalized after first meta/packet.
     initial_indices = chan_indices_cli if (chan_indices_cli or (not use_all and not first_n)) else [0]
@@ -130,13 +139,12 @@ def run_plot(
         cf = pywt.central_frequency(wavelet)
         return (cf / (freqs * dt))
 
-    # WebSocket thread
+    # Packet handler shared by live WS and offline replay
     def on_packet(header: Dict[str, Any], samples: np.ndarray, meta: Optional[Dict[str, Any]]):
         state.maybe_update_from_meta(meta)
-        # learn channel count from shape if meta didn't include it
         state.learn_channels_from_samples(samples)
 
-        # If user requested --all or --nch, finalize selection once we know total_chans
+        # Finalize selection once we know total_chans
         with state.lock:
             if state.need_relayout and state.total_chans is not None:
                 if use_all:
@@ -154,10 +162,47 @@ def run_plot(
         state.ensure_subset_in_range()
         state.ingest(samples)
 
+    # Live or offline feeder
     def ws_thread():
         asyncio.run(start_data_ws(host=host, subscriptions=[(topic, epoch)], on_packet=on_packet))
 
-    threading.Thread(target=ws_thread, daemon=True).start()
+    def offline_thread():
+        assert offline_data is not None
+        # offline_data: (C, T) → we emit (B, C)
+        C, T = int(offline_data.shape[0]), int(offline_data.shape[1])
+        fs0 = float(offline_fs or fs or 250.0)
+        ch_names = offline_chan_names or [f"ch{i}" for i in range(C)]
+        hdr = {"topic": "offline_stdin", "packet_type": "f32", "num_channels": C}
+
+        # one-time meta
+        on_packet(hdr, np.zeros((0, C), dtype=np.float32), {"fs": fs0, "chan_names": ch_names})
+
+        t0 = time.perf_counter()
+        emitted = 0
+        while emitted < T:
+            b = min(replay_batch, T - emitted)
+            # slice from (C, T) and transpose to (B, C)
+            batch = offline_data[:, emitted:emitted + b].T.astype(np.float32, copy=False)
+            on_packet(hdr, batch, {"fs": fs0, "chan_names": ch_names})
+            emitted += b
+
+            if replay_speed <= 0:
+                continue  # as fast as possible
+            # sleep to approximate real time
+            # batch duration at fs0 is (b / fs0); scale by 1/replay_speed
+            dt = (b / fs0) / max(1e-9, replay_speed)
+            # try to keep cumulative timing tight
+            target = (emitted / fs0) / max(1e-9, replay_speed)
+            now = time.perf_counter() - t0
+            to_sleep = target - now
+            if to_sleep > 0:
+                time.sleep(to_sleep)
+
+    # Start the appropriate feeder thread
+    if offline_data is None:
+        threading.Thread(target=ws_thread, daemon=True).start()
+    else:
+        threading.Thread(target=offline_thread, daemon=True).start()
 
     # Matplotlib setup
     fig = plt.figure(figsize=(8, 6))
@@ -281,10 +326,9 @@ def run_plot(
         interval=120,
         blit=False,
         cache_frame_data=False,
-        save_count=300,   # optional, any reasonable cap
+        save_count=300,
     )
-    # Keep it alive by attaching to the figure as well (extra safety).
-    fig._ani = ani
+    fig._ani = ani  # keep it alive
     plt.show()
     return ani
 
@@ -294,12 +338,77 @@ def parse_channels(s: str) -> List[int]:
     return [int(p) for p in parts]
 
 
+def load_npz_from_stdin() -> Tuple[Optional[np.ndarray], Optional[float], Optional[List[str]]]:
+    """
+    If stdin has data, read an .npz (as saved by `record_epochs.py`) and return:
+      data (C, T), fs (float), ch_names (list[str])  — any missing returns None.
+    If stdin is a TTY or empty, returns (None, None, None).
+    """
+    try:
+        if sys.stdin.isatty():
+            return None, None, None
+    except Exception:
+        pass
+
+    # Peek without blocking too long: read everything available.
+    raw = sys.stdin.buffer.read()
+    if not raw:
+        return None, None, None
+
+    bio = io.BytesIO(raw)
+    try:
+        npz = np.load(bio, allow_pickle=True)
+    except Exception as e:
+        print(f"[stdin] Failed to load npz from stdin: {e}")
+        return None, None, None
+
+    data = None
+    fs = None
+    ch_names = None
+
+    # Common recorder keys
+    if "data" in npz:
+        arr = npz["data"]
+        if arr.ndim == 2:
+            data = arr  # expected (C, T)
+    elif "X" in npz:
+        arr = npz["X"]
+        if arr.ndim == 2:
+            data = arr
+
+    if "fs" in npz:
+        try:
+            fs = float(np.array(npz["fs"]).astype(np.float64))
+        except Exception:
+            fs = None
+
+    # ch_names could be saved as object array
+    for key in ("ch_names", "channels", "chan_names"):
+        if key in npz:
+            arr = npz[key]
+            try:
+                ch_names = [str(x) for x in list(arr.tolist())]
+                break
+            except Exception:
+                pass
+
+    # sanitize orientation
+    if data is not None and data.shape[0] < data.shape[1]:
+        # assume (C, T) already correct (recorder saves this way)
+        pass
+    elif data is not None:
+        # looks like (T, C) — transpose to (C, T)
+        data = data.T
+
+    return data, fs, ch_names
+
+
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Real-time multi-channel CWT (one window, separate subplots).")
+    p = argparse.ArgumentParser(description="Real-time/Offline multi-channel CWT (one window, separate subplots).")
     p.add_argument("--host", default="raspberrypi.local")
     p.add_argument("--topic", default="eeg_voltage")
     p.add_argument("--epoch", type=int, default=1)
-    p.add_argument("--fs", type=float, default=250.0, help="Fallback fs if not in meta.")
+    p.add_argument("--fs", type=float, default=250.0, help="Fallback fs if not in meta or stdin.")
     p.add_argument("--window", type=float, default=12.0, help="Rolling window (s).")
 
     g = p.add_mutually_exclusive_group()
@@ -318,8 +427,32 @@ if __name__ == "__main__":
     p.add_argument("--no-hp", dest="hp", action="store_false")
     p.set_defaults(hp=True)
 
+    # NEW: stdin replay controls
+    p.add_argument("--stdin", dest="force_stdin", action="store_true",
+                   help="Force reading a .npz from stdin (even if TTY).")
+    p.add_argument("--replay-speed", type=float, default=1.0,
+                   help="Replay speed multiplier (1.0=real-time, 2.0=2x, 0=as fast as possible).")
+    p.add_argument("--replay-batch", type=int, default=64, help="Samples per replay push.")
+
     args = p.parse_args()
     chan_list = parse_channels(args.channels) if args.channels else []
+
+    # Autodetect stdin .npz unless user forces off (no flag needed) or forces on.
+    offline_data = None
+    offline_fs = None
+    offline_ch_names = None
+
+    if args.force_stdin or (not sys.stdin.isatty()):
+        d, f_in, nms = load_npz_from_stdin()
+        if d is not None:
+            offline_data, offline_fs, offline_ch_names = d, f_in, nms
+            print(f"[stdin] Loaded offline .npz: C={offline_data.shape[0]} T={offline_data.shape[1]} "
+                  f"fs={offline_fs if offline_fs else args.fs} "
+                  f"names={len(offline_ch_names) if offline_ch_names else 'none'}")
+        else:
+            if args.force_stdin:
+                print("[stdin] --stdin set but no valid .npz detected on stdin. Exiting.")
+                sys.exit(2)
 
     _anim = run_plot(
         host=args.host,
@@ -336,4 +469,9 @@ if __name__ == "__main__":
         n_freqs=args.n_freqs,
         use_zscore=args.zscore,
         hp_demean=args.hp,
+        offline_data=offline_data,
+        offline_fs=offline_fs,
+        offline_chan_names=offline_ch_names,
+        replay_speed=float(args.replay_speed),
+        replay_batch=int(args.replay_batch),
     )

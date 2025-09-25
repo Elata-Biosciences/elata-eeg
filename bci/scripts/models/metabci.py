@@ -49,14 +49,13 @@ import pathlib
 import struct
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 from joblib import dump, load
-from scipy.signal import butter, sosfiltfilt, welch
+from scipy.signal import butter, iirnotch, filtfilt, sosfiltfilt, welch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -68,10 +67,12 @@ except ImportError as e:
 # ----------------------------- Config -----------------------------
 DEFAULT_CHANNELS_HINT = ["ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8"]  # prefer sensorimotor
 BANDS = [(4, 7), (8, 12), (13, 30), (30, 45)]  # theta, mu(alpha), beta, low-gamma
-WINDOW_SECONDS = 1.0
+WINDOW_SECONDS = 1.25
 HOP_SECONDS = 0.25
 TRAIN_TOTAL_MIN = 5
 BLOCK_SECONDS = 5.0
+FILTER_MARGIN_S = 1.0
+NOTCH_Q = 40.0
 
 @dataclass
 class StreamState:
@@ -83,8 +84,8 @@ class StreamState:
 # ----------------------------- Helpers -----------------------------
 
 def choose_channels(ch_names: List[str]) -> List[int]:
-    idx = [ch_names.index(c) for c in DEFAULT_CHANNELS_HINT if c in ch_names]
-    return idx if idx else list(range(len(ch_names)))
+    # Use every available channel so lateralization averages remain stable.
+    return list(range(len(ch_names)))
 
 async def parse_json_stream(msg: str) -> Tuple[np.ndarray, float, float, List[str]]:
     """Original JSON schema: return (data[n_ch,n_samp], fs, t0, ch_names)."""
@@ -107,6 +108,78 @@ def bp_filter(x: np.ndarray, fs: float) -> np.ndarray:
     return sosfiltfilt(sos, x, axis=1)
 
 
+_notch_cache: Dict[Tuple[float, float, float], Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def iir_notch_zero_phase(x: np.ndarray, fs: float, f0: float, q: float = NOTCH_Q) -> np.ndarray:
+    """Apply a cached zero-phase IIR notch."""
+    key = (fs, f0, q)
+    coeffs = _notch_cache.get(key)
+    if coeffs is None:
+        coeffs = iirnotch(w0=f0, Q=q, fs=fs)
+        _notch_cache[key] = coeffs
+    b, a = coeffs
+    # Require enough samples for filtfilt padding; otherwise leave data untouched.
+    min_len = 3 * (max(len(a), len(b)) - 1)
+    if x.shape[1] <= min_len:
+        return x
+    return filtfilt(b, a, x, axis=1)
+
+
+def clean(x: np.ndarray, fs: float) -> np.ndarray:
+    """Apply band-pass and harmonic notch filtering."""
+    y = bp_filter(x, fs)
+    y = iir_notch_zero_phase(y, fs, 60.0)
+    y = iir_notch_zero_phase(y, fs, 120.0)
+    return y
+
+
+def bandpower(f: np.ndarray, Pxx: np.ndarray, lo: float, hi: float) -> float:
+    mask = (f >= lo) & (f <= hi)
+    return float(np.trapz(Pxx[mask], f[mask]))
+
+
+def compact_features(x: np.ndarray, fs: float) -> np.ndarray:
+    """Compute per-channel relative bandpower plus global lateralization."""
+    nperseg = int(0.5 * fs)
+    noverlap = int(0.25 * fs)
+    eps = 1e-12
+
+    mu_vals: List[float] = []
+    beta_vals: List[float] = []
+    rel_feats: List[float] = []
+
+    for ch in range(x.shape[0]):
+        f, Pxx = welch(x[ch], fs=fs, nperseg=nperseg, noverlap=noverlap)
+        tot = bandpower(f, Pxx, 1, 45) + eps
+        mu = bandpower(f, Pxx, 8, 12) + eps
+        beta = bandpower(f, Pxx, 13, 30) + eps
+        mu_vals.append(mu)
+        beta_vals.append(beta)
+        rel_feats.append(np.log(mu / tot))
+        rel_feats.append(np.log(beta / tot))
+
+    mu_arr = np.array(mu_vals)
+    beta_arr = np.array(beta_vals)
+
+    n_ch = x.shape[0]
+    if n_ch >= 2:
+        mid = n_ch // 2 or 1
+        left_mu = float(np.mean(mu_arr[:mid]))
+        right_mu = float(np.mean(mu_arr[mid:])) if mid < n_ch else left_mu
+        left_beta = float(np.mean(beta_arr[:mid]))
+        right_beta = float(np.mean(beta_arr[mid:])) if mid < n_ch else left_beta
+    else:
+        left_mu = right_mu = float(mu_arr[0])
+        left_beta = right_beta = float(beta_arr[0])
+
+    li_mu = (right_mu - left_mu) / (right_mu + left_mu + eps)
+    li_beta = (right_beta - left_beta) / (right_beta + left_beta + eps)
+
+    feats = rel_feats + [li_mu, li_beta]
+    return np.array(feats, dtype=np.float64)
+
+
 def bandpower_features(x: np.ndarray, fs: float, bands=BANDS) -> np.ndarray:
     nperseg = int(0.5 * fs)
     noverlap = int(0.25 * fs)
@@ -126,6 +199,7 @@ async def run_training_generic(chunk_iter, out_dir: str, total_min: float, block
 
     X: List[np.ndarray] = []
     y: List[int] = []  # 1=up, 0=down
+    sample_blocks: List[int] = []
 
     # Cue schedule
     total_s = int(total_min * 60)
@@ -137,12 +211,18 @@ async def run_training_generic(chunk_iter, out_dir: str, total_min: float, block
         cur += block_s
         cur_label = 1 - cur_label
 
+    LABEL_SHIFT_S = 0.6
+    EDGE_TRIM_S = 0.4
+    blocks = [(s + LABEL_SHIFT_S, e + LABEL_SHIFT_S, lab) for (s, e, lab) in blocks]
+
     fs: Optional[float] = None
     ch_names: Optional[List[str]] = None
     sel_idx: Optional[List[int]] = None
     ring_len = 0
     ring = None
     write_pos = 0
+    samples_seen = 0
+    window_powers: List[float] = []
 
     t_start = time.time()
     next_cue_idx = 0
@@ -157,7 +237,9 @@ async def run_training_generic(chunk_iter, out_dir: str, total_min: float, block
             fs = fs_msg
             ch_names = chs
             sel_idx = choose_channels(ch_names)
-            ring_len = int(3 * fs)
+            m = int(WINDOW_SECONDS * fs)
+            buffer_margin = int(FILTER_MARGIN_S * fs)
+            ring_len = int(max(3 * fs, m + 2 * buffer_margin + 1))
             ring = np.zeros((len(sel_idx), ring_len), dtype=np.float64)
             print("[trainer] fs=", fs, "channels=", len(ch_names), "using", [ch_names[i] for i in sel_idx])
         sel = data[sel_idx, :]
@@ -165,18 +247,50 @@ async def run_training_generic(chunk_iter, out_dir: str, total_min: float, block
         for i in range(n):
             ring[:, write_pos] = sel[:, i]
             write_pos = (write_pos + 1) % ring_len
+        samples_seen += n
 
         now = time.time()
         if now - last_emit >= HOP_SECONDS and fs is not None:
             last_emit = now
             m = int(WINDOW_SECONDS * fs)
-            if m <= ring_len:
-                idxs = (np.arange(m) + write_pos - m) % ring_len
-                xw = ring[:, idxs]
-                xf = bp_filter(xw, fs)
-                feats = bandpower_features(xf, fs)
+            context_len = min(ring_len, m + int(FILTER_MARGIN_S * fs))
+            if m <= ring_len and samples_seen >= context_len:
+                idxs = (np.arange(context_len) + write_pos - context_len) % ring_len
+                xw_full = ring[:, idxs]
+                rel_t = now - t_start
+
+                block_idx = None
+                block_label = None
+                block_start = None
+                block_end = None
+                for idx, (start, end, lab) in enumerate(blocks):
+                    if start <= rel_t <= end:
+                        block_idx = idx
+                        block_label = lab
+                        block_start = start
+                        block_end = end
+                        break
+
+                if block_idx is None:
+                    continue
+
+                if rel_t < (block_start + EDGE_TRIM_S) or rel_t > (block_end - EDGE_TRIM_S):
+                    continue
+
+                xf_full = clean(xw_full, fs)
+                xf = xf_full[:, -m:]
+                pow_1_45 = float(np.sum(xf ** 2))
+                window_powers.append(pow_1_45)
+                median_pow = float(np.median(window_powers)) if window_powers else pow_1_45
+                if median_pow <= 0:
+                    median_pow = pow_1_45
+                if pow_1_45 > 5 * median_pow or pow_1_45 < 0.1 * median_pow:
+                    continue
+
+                feats = compact_features(xf, fs)
                 X.append(feats)
-                y.append(current_label)
+                y.append(block_label)
+                sample_blocks.append(block_idx)
 
         if now >= next_cue_change and next_cue_idx + 1 < len(blocks):
             next_cue_idx += 1
@@ -188,18 +302,57 @@ async def run_training_generic(chunk_iter, out_dir: str, total_min: float, block
         if now - t_start >= total_s:
             break
 
-    X = np.vstack(X)
+    if not X:
+        print("[trainer] No valid windows collected; aborting training.")
+        return
+
+    X_arr = np.vstack(X)
     y_arr = np.array(y, dtype=np.int64)
-    print(f"[trainer] Collected windows: {len(y_arr)}; class balance: up={int(y_arr.sum())} down={int((y_arr==0).sum())}")
+    block_ids = np.array(sample_blocks, dtype=np.int64)
+    print(
+        f"[trainer] Collected windows: {len(y_arr)}; class balance: up={int(y_arr.sum())} down={int((y_arr==0).sum())}"
+    )
 
     pipe = Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegression(max_iter=200, class_weight="balanced"))
     ])
-    Xtr, Xte, ytr, yte = train_test_split(X, y_arr, test_size=0.2, stratify=y_arr, random_state=0)
-    pipe.fit(Xtr, ytr)
-    yhat = pipe.predict(Xte)
-    acc = accuracy_score(yte, yhat)
+
+    unique_blocks = sorted(set(block_ids.tolist()))
+
+    if len(unique_blocks) < 2:
+        print("[trainer] Not enough distinct blocks for holdout; training on all data.")
+        pipe.fit(X_arr, y_arr)
+        acc = accuracy_score(y_arr, pipe.predict(X_arr))
+    else:
+        split_at = max(1, int(round(len(unique_blocks) * 0.8)))
+        if split_at >= len(unique_blocks):
+            split_at = len(unique_blocks) - 1
+
+        train_blocks = unique_blocks[:split_at]
+        test_blocks = unique_blocks[split_at:]
+
+        train_mask = np.isin(block_ids, train_blocks)
+        test_mask = np.isin(block_ids, test_blocks)
+
+        while len(np.unique(y_arr[train_mask])) < 2 and test_blocks:
+            train_blocks.append(test_blocks.pop(0))
+            train_mask = np.isin(block_ids, train_blocks)
+            test_mask = np.isin(block_ids, test_blocks)
+
+        if len(np.unique(y_arr[train_mask])) < 2:
+            print("[trainer] Unable to obtain both classes in training; using all data.")
+            train_mask = np.ones_like(block_ids, dtype=bool)
+            test_mask = np.zeros_like(block_ids, dtype=bool)
+
+        pipe.fit(X_arr[train_mask], y_arr[train_mask])
+
+        if test_mask.any():
+            yhat = pipe.predict(X_arr[test_mask])
+            acc = accuracy_score(y_arr[test_mask], yhat)
+        else:
+            print("[trainer] No holdout samples available; reporting training accuracy.")
+            acc = accuracy_score(y_arr[train_mask], pipe.predict(X_arr[train_mask]))
     print(f"[trainer] Holdout accuracy: {acc:.3f}")
 
     dump(pipe, outp / "model.joblib")
@@ -254,6 +407,10 @@ async def run_inference_generic(chunk_iter, model_path: str, out_host: str, out_
     server_task = asyncio.create_task(output_server(hub, out_host, out_port))
     pipe: Pipeline = load(model_path)
 
+    alpha = 1 - math.exp(-HOP_SECONDS / 0.4)
+    p_up_smooth = 0.5
+    state = "down"
+
     fs = None
     ch_names = None
     sel_idx = None
@@ -261,6 +418,7 @@ async def run_inference_generic(chunk_iter, model_path: str, out_host: str, out_
     ring = None
     write_pos = 0
     last_emit = time.time()
+    samples_seen = 0
 
     try:
         async for data, fs_msg, t_recv, chs in chunk_iter:
@@ -268,7 +426,9 @@ async def run_inference_generic(chunk_iter, model_path: str, out_host: str, out_
                 fs = fs_msg
                 ch_names = chs
                 sel_idx = choose_channels(ch_names)
-                ring_len = int(3 * fs)
+                m = int(WINDOW_SECONDS * fs)
+                buffer_margin = int(FILTER_MARGIN_S * fs)
+                ring_len = int(max(3 * fs, m + 2 * buffer_margin + 1))
                 ring = np.zeros((len(sel_idx), ring_len), dtype=np.float64)
                 print("[infer] fs=", fs, "channels=", len(ch_names), "using", [ch_names[i] for i in sel_idx])
             sel = data[sel_idx, :]
@@ -276,23 +436,30 @@ async def run_inference_generic(chunk_iter, model_path: str, out_host: str, out_
             for i in range(n):
                 ring[:, write_pos] = sel[:, i]
                 write_pos = (write_pos + 1) % ring_len
+            samples_seen += n
 
             now = time.time()
             if now - last_emit >= HOP_SECONDS and fs is not None:
                 last_emit = now
                 m = int(WINDOW_SECONDS * fs)
-                if m <= ring_len:
-                    idxs = (np.arange(m) + write_pos - m) % ring_len
-                    xw = ring[:, idxs]
-                    xf = bp_filter(xw, fs)
-                    feats = bandpower_features(xf, fs)[None, :]
+                context_len = min(ring_len, m + int(FILTER_MARGIN_S * fs))
+                if m <= ring_len and samples_seen >= context_len:
+                    idxs = (np.arange(context_len) + write_pos - context_len) % ring_len
+                    xw_full = ring[:, idxs]
+                    xf_full = clean(xw_full, fs)
+                    xf = xf_full[:, -m:]
+                    feats = compact_features(xf, fs)[None, :]
                     proba = pipe.predict_proba(feats)[0]
                     up_p = float(proba[1])
                     down_p = float(proba[0])
-                    y = "up" if up_p >= down_p else "down"
+                    p_up_smooth = (1 - alpha) * p_up_smooth + alpha * up_p
+                    if state != "up" and p_up_smooth > 0.65:
+                        state = "up"
+                    elif state != "down" and p_up_smooth < 0.35:
+                        state = "down"
                     out = {
                         "t": time.time(),
-                        "y": y,
+                        "y": state,
                         "p": {"up": up_p, "down": down_p},
                         "latency_ms": int((time.time() - t_recv) * 1000),
                     }
@@ -314,7 +481,10 @@ async def json_chunk_iter(eeg_ws: str):
 
 # ----------------------------- DataHub Source (your integration) -----------------------------
 MetaMap = Dict[str, Dict[str, Any]]
-PacketHandler = Callable[[Dict[str, Any], np.ndarray, Dict[str, Any] | None], Awaitable[None] | None]
+PacketHandler = Callable[
+    [Dict[str, Any], np.ndarray, Optional[Dict[str, Any]]],
+    Union[Awaitable[None], None],
+]
 
 def ws_data_to_np_array(header: Dict[str, Any], payload: bytes) -> np.ndarray:
     dtype = "<i4" if header.get("packet_type") == "RawI32" else "<f4"
@@ -323,7 +493,7 @@ def ws_data_to_np_array(header: Dict[str, Any], payload: bytes) -> np.ndarray:
     batch = header.get("batch_size", 0) or (len(data) // channels)
     return data.reshape(batch, channels, order="C")
 
-def ws_data_received(message: str | bytes, metadata: MetaMap) -> Tuple[str, Any]:
+def ws_data_received(message: Union[str, bytes], metadata: MetaMap) -> Tuple[str, Any]:
     if isinstance(message, str):
         obj = json.loads(message)
         if obj.get("message_type") == "meta_update":
