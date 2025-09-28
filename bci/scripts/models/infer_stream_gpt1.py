@@ -36,7 +36,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 # Import model/DSP helpers and websocket client
 try:
-    from gpt1 import TinyBlinkNet, make_stream_transform, select_fp_indices, bandpass_filter, standardize_per_window, expand_to_4ch  # type: ignore
+    from gpt1 import TinyBlinkNet, bandpass_filter, standardize_per_window  # type: ignore
 except Exception as e:
     print(f"❌ Could not import TinyBlinkNet/DSP from gpt1.py: {e}")
     print("Ensure PYTHONPATH includes bci/scripts/models or run from repo root.")
@@ -98,9 +98,7 @@ class StreamState:
     model: TinyBlinkNet
     window_s: float = 1.0
     hop_s: float = 0.25
-    smooth_k: int = 0  # rolling majority vote window (0 disables)
-    ema_alpha: float = 0.0  # EMA of probabilities (0 disables)
-    compat_double: bool = False  # emulate legacy double-filtered training distribution
+    smooth_k: int = 0  # rolling majority window over last K preds (0 disables)
 
     # Runtime/updatable fields
     fs: float = 250.0
@@ -116,15 +114,6 @@ class StreamState:
     next_start: int = 0  # next window start index (in samples) for inference
     pred_hist: deque = field(default_factory=deque)
 
-    # Preferred FP indices from checkpoint meta (optional)
-    prefer_idx: Optional[Tuple[int, int]] = None
-
-    # Preprocessing transform cached per fs
-    transform: Optional[Any] = None
-
-    # EMA state
-    prob_ema: Optional[np.ndarray] = None
-
     def update_fs_and_channels(self, header: Dict[str, Any], meta: Optional[Dict[str, Any]], samples: np.ndarray):
         num_ch = int(header.get("num_channels") or (samples.shape[1] if samples.ndim == 2 else 1))
         fs_new = extract_fs(header, meta, self.fs)
@@ -135,25 +124,10 @@ class StreamState:
             self.fs = float(fs_new)
             self.num_channels = int(num_ch)
             self.chan_names = names
-
-            # Choose FP indices: prefer checkpoint-provided if valid, else heuristic
-            if self.prefer_idx is not None:
-                i1, i2 = int(self.prefer_idx[0]), int(self.prefer_idx[1])
-                if 0 <= i1 < self.num_channels and 0 <= i2 < self.num_channels and i1 != i2:
-                    self.idx_fp1, self.idx_fp2 = i1, i2
-                else:
-                    self.idx_fp1, self.idx_fp2 = select_fp_indices(self.chan_names)
-            else:
-                self.idx_fp1, self.idx_fp2 = select_fp_indices(self.chan_names)
-
+            self.idx_fp1, self.idx_fp2 = find_fp_indices(names)
             self.window_len = max(1, int(round(self.window_s * self.fs)))
             self.hop_len = max(1, int(round(self.hop_s * self.fs)))
             self.next_start = max(0, len(self.buf_fp1) - (len(self.buf_fp1) % self.hop_len))  # align to hop
-
-            # Reset transform and EMA on fs change
-            self.transform = make_stream_transform(self.fs)
-            self.prob_ema = None
-
             print(
                 f"[stream] fs={self.fs:.2f}Hz | chans={self.num_channels} {self.chan_names} "
                 f"| Fp1={self.idx_fp1}, Fp2={self.idx_fp2} | win={self.window_len} hop={self.hop_len}"
@@ -161,7 +135,7 @@ class StreamState:
 
     def append_samples(self, samples: np.ndarray):
         if samples.ndim == 1:
-            # (batch,) -> assume single channel; duplicate
+            # (batch,) -> assume single channel; duplicate or treat as both?
             x = samples.astype(np.float32)
             self.buf_fp1.extend(x.tolist())
             self.buf_fp2.extend(x.tolist())
@@ -195,97 +169,43 @@ class StreamState:
                 self.next_start -= drop
         return fp1, fp2
 
-    def infer_window(self, fp1: np.ndarray, fp2: np.ndarray) -> Tuple[int, np.ndarray, np.ndarray]:
-        assert self.transform is not None, "Transform not initialized"
-        if not self.compat_double:
-            X4 = self.transform(fp1, fp2).astype(np.float32)  # (4,T)
-        else:
-            # Legacy-compat: approximate training-time double filtering (continuous + window) by filtering twice per window.
-            X4 = expand_to_4ch(fp1, fp2).astype(np.float32)  # (4,T)
-            X4 = bandpass_filter(X4, 0.1, 15.0, self.fs, order=4).astype(np.float32)
-            X4 = bandpass_filter(X4, 0.1, 15.0, self.fs, order=4).astype(np.float32)
-            X4 = standardize_per_window(X4).astype(np.float32)
+    def infer_window(self, fp1: np.ndarray, fp2: np.ndarray) -> Tuple[int, np.ndarray]:
+        # Build 4-channel window [Fp1, Fp2, diff, sum]
+        diff = fp1 - fp2
+        sumv = 0.5 * (fp1 + fp2)
+        X4 = np.stack([fp1, fp2, diff, sumv], axis=0).astype(np.float32)
+
+        # Bandpass and standardize as in training
+        X4 = bandpass_filter(X4, 0.1, 15.0, self.fs, order=4).astype(np.float32)
+        X4 = standardize_per_window(X4).astype(np.float32)
+
         xt = torch.from_numpy(X4[None, :, :]).to(self.device)  # (1,4,T)
         with torch.no_grad():
             logits = self.model(xt)
             probs = torch.softmax(logits, dim=1).detach().cpu().numpy()[0]
             pred = int(np.argmax(probs))
-        return pred, probs, X4
+        return pred, probs
 
-    def update_ema(self, probs: np.ndarray) -> Tuple[np.ndarray, int]:
-        if self.ema_alpha <= 0.0:
-            return probs, int(np.argmax(probs))
-        if self.prob_ema is None or self.prob_ema.shape != probs.shape:
-            self.prob_ema = probs.astype(np.float32)
-        else:
-            a = float(self.ema_alpha)
-            self.prob_ema = (1.0 - a) * self.prob_ema + a * probs.astype(np.float32)
-        return self.prob_ema, int(np.argmax(self.prob_ema))
-
-    def smooth_pred(self, pred: int) -> int:
+    def smooth_pred(self, raw_pred: int) -> int:
         if self.smooth_k <= 1:
-            return pred
-        self.pred_hist.append(pred)
+            return raw_pred
+        self.pred_hist.append(raw_pred)
         while len(self.pred_hist) > self.smooth_k:
             self.pred_hist.popleft()
+        # Majority vote
         vals, cnts = np.unique(np.fromiter(self.pred_hist, dtype=np.int64), return_counts=True)
         return int(vals[int(np.argmax(cnts))])
 
 
 async def stream_infer(args):
-    # Load checkpoint (supports {"state_dict","meta"} or raw state_dict)
-    ckpt = torch.load(args.weights, map_location="cpu")
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        state_dict = ckpt["state_dict"]
-        meta = ckpt.get("meta", {}) or {}
-    else:
-        state_dict = ckpt
-        meta = {}
-
-    # Determine n_classes
-    if "classifier.weight" in state_dict:
-        n_classes = int(state_dict["classifier.weight"].shape[0])
-    elif isinstance(meta.get("classes"), (list, tuple)) and len(meta["classes"]) > 0:
-        n_classes = int(len(meta["classes"]))
-    else:
-        n_classes = 3
-
-    # Preferred FP indices from meta (optional)
-    prefer_idx = None
-    if isinstance(meta.get("fp_indices"), (list, tuple)) and len(meta["fp_indices"]) == 2:
-        prefer_idx = (int(meta["fp_indices"][0]), int(meta["fp_indices"][1]))
-    # CLI override if provided
-    if getattr(args, "fp1", None) is not None and args.fp1 >= 0 and getattr(args, "fp2", None) is not None and args.fp2 >= 0:
-        prefer_idx = (int(args.fp1), int(args.fp2))
+    # Load weights
+    state_dict = torch.load(args.weights, map_location="cpu")
+    n_classes = int(state_dict["classifier.weight"].shape[0]) if "classifier.weight" in state_dict else 3
 
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     model = TinyBlinkNet(n_classes=n_classes).to(device)
-
-    # Load with BN→GN compatibility: remap keys and drop BN running buffers
-    sd = {}
-    for k, v in state_dict.items():
-        if any(s in k for s in ("running_mean", "running_var", "num_batches_tracked")):
-            continue
-        nk = k.replace(".bn.", ".gn.").replace("head_bn.", "head_gn.")
-        sd[nk] = v
-    load_res = model.load_state_dict(sd, strict=False)
+    model.load_state_dict(state_dict)
     model.eval()
-    try:
-        missing = getattr(load_res, "missing_keys", [])
-        unexpected = getattr(load_res, "unexpected_keys", [])
-        if missing or unexpected:
-            print(f"[warn] load_state: missing={missing} unexpected={unexpected}")
-    except Exception:
-        pass
-
-    # Warn if channel names don't include Fp1/Fp2 and no indices provided
-    try:
-        chn = meta.get("chan_names") if isinstance(meta.get("chan_names"), (list, tuple)) else None
-        if prefer_idx is None and not (chn and any(str(x).lower() == "fp1" for x in chn) and any(str(x).lower() == "fp2" for x in chn)):
-            print("[warn] No fp_indices in checkpoint and channel names do not include Fp1/Fp2. "
-                  "Consider passing --fp1/--fp2 to select the correct channels.")
-    except Exception:
-        pass
 
     state = StreamState(
         device=device,
@@ -293,49 +213,34 @@ async def stream_infer(args):
         window_s=float(args.window_s),
         hop_s=float(args.hop_s),
         smooth_k=int(args.smooth) if args.smooth and args.smooth > 0 else 0,
-        ema_alpha=float(args.ema_alpha) if args.ema_alpha and args.ema_alpha > 0 else 0.0,
-        prefer_idx=prefer_idx,
-        compat_double=bool(args.compat_double_filter),
     )
 
     last_print_ts = 0.0
 
-    async def on_packet(header: Dict[str, Any], samples: np.ndarray, meta_pkt: Optional[Dict[str, Any]]):
+    async def on_packet(header: Dict[str, Any], samples: np.ndarray, meta: Optional[Dict[str, Any]]):
         nonlocal last_print_ts
 
         # Initialize/update runtime params
-        state.update_fs_and_channels(header, meta_pkt, samples)
+        state.update_fs_and_channels(header, meta, samples)
 
         # Append streaming samples
         state.append_samples(samples)
 
         # Consume as many hop windows as available
+        made = 0
         while True:
             pair = state.next_window()
             if pair is None:
                 break
             fp1, fp2 = pair
-            raw_pred, probs, X4 = state.infer_window(fp1, fp2)
-            if args.debug:
-                fp1_std = float(np.std(fp1))
-                fp2_std = float(np.std(fp2))
-                diff_std = float(np.std(fp1 - fp2))
-                x4_rms = [float(np.sqrt(np.mean(X4[i] ** 2))) for i in range(X4.shape[0])]
-                print(f"[dbg] next_start={state.next_start} len={len(state.buf_fp1)} "
-                      f"fp1_std={fp1_std:.6f} fp2_std={fp2_std:.6f} diff_std={diff_std:.6f} "
-                      f"X4_rms={[round(v,6) for v in x4_rms]} "
-                      f"FpIdx=({state.idx_fp1},{state.idx_fp2}) compat_double={state.compat_double}")
-                if diff_std < 1e-6:
-                    print("[warn] Very low diff_std; check FP indices or signal source (possible flat/noise-only input).")
-            ema_probs, ema_pred = state.update_ema(probs)
-            base_pred = ema_pred if state.ema_alpha > 0 else raw_pred
-            smoothed = state.smooth_pred(base_pred)
+            pred, probs = state.infer_window(fp1, fp2)
+            smoothed = state.smooth_pred(pred)
 
             now = time.time()
             # Throttle prints to ~10Hz (but print every hop if small rate)
             if now - last_print_ts > max(0.01, state.hop_len / max(1.0, state.fs) * 0.5):
                 msg = (
-                    f"[pred] raw={raw_pred} ema={ema_pred if state.ema_alpha>0 else '-'} smoothed={smoothed} "
+                    f"[pred] raw={pred} smoothed={smoothed} "
                     f"probs={[round(float(x), 3) for x in probs.tolist()]} "
                     f"| fs={state.fs:.1f}Hz win={state.window_len} hop={state.hop_len} "
                     f"| Fp1={state.chan_names[state.idx_fp1] if state.chan_names else state.idx_fp1} "
@@ -343,6 +248,7 @@ async def stream_infer(args):
                 )
                 print(msg)
                 last_print_ts = now
+            made += 1
 
     print(
         f"🚀 Streaming inference: host={args.host} topic={args.topic} epoch={args.epoch} "
@@ -361,11 +267,6 @@ def main():
     ap.add_argument("--hop_s", type=float, default=0.25, help="Hop length (seconds)")
     ap.add_argument("--device", type=str, default=None, help="cuda|cpu (auto if not set)")
     ap.add_argument("--smooth", type=int, default=0, help="Majority-vote window over last K preds (0=off)")
-    ap.add_argument("--ema_alpha", type=float, default=0.0, help="EMA alpha for probability smoothing (0=off)")
-    ap.add_argument("--fp1", type=int, default=-1, help="Force FP1 channel index (overrides meta)")
-    ap.add_argument("--fp2", type=int, default=-1, help="Force FP2 channel index (overrides meta)")
-    ap.add_argument("--compat_double_filter", action="store_true", help="Approximate legacy double filtering per window")
-    ap.add_argument("--debug", action="store_true", help="Enable verbose per-window diagnostics")
     args = ap.parse_args()
 
     try:

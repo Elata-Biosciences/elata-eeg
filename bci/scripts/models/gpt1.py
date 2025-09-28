@@ -145,9 +145,21 @@ class BlinkWindows(Dataset):
         self.train = train
 
         assert X.ndim == 3 and X.shape[1] == 2, "Expected X shape (N, 2, T)"
-        # Use the exact same preprocessing as inference: expand→bandpass→zscore
-        X4 = offline_prepare_X4(X, self.fs)  # (N, 4, T)
-        self.X = X4.astype(np.float32)
+        fp1 = X[:, 0, :]
+        fp2 = X[:, 1, :]
+        diff = fp1 - fp2           # horizontal EOG (lateralization)
+        sumv = 0.5 * (fp1 + fp2)   # vertical EOG (blink strength)
+        X4 = np.stack([fp1, fp2, diff, sumv], axis=1)  # (N, 4, T)
+
+        # Bandpass to blink band
+        for i in range(X4.shape[0]):
+            X4[i] = bandpass_filter(X4[i], 0.1, 15.0, self.fs, order=4)
+
+        # Standardize per window
+        for i in range(X4.shape[0]):
+            X4[i] = standardize_per_window(X4[i])
+
+        self.X = X4.astype(np.float32)     # (N, 4, T)
         self.y = y.astype(np.int64)
 
     def __len__(self):
@@ -184,13 +196,13 @@ class DepthwiseSeparableConv1d(nn.Module):
         self.depth = nn.Conv1d(in_ch, in_ch, kernel_size=kernel_size, padding=padding,
                                dilation=dilation, groups=in_ch, bias=False)
         self.point = nn.Conv1d(in_ch, out_ch, kernel_size=1, bias=False)
-        self.gn = nn.GroupNorm(1, out_ch)
+        self.bn = nn.BatchNorm1d(out_ch)
         self.act = nn.GELU()
 
     def forward(self, x):
         x = self.depth(x)
         x = self.point(x)
-        x = self.gn(x)
+        x = self.bn(x)
         x = self.act(x)
         return x
 
@@ -204,14 +216,14 @@ class TinyBlinkNet(nn.Module):
         super().__init__()
         self.stem = nn.Sequential(
             nn.Conv1d(4, 16, kernel_size=11, padding=5, bias=False),
-            nn.GroupNorm(1, 16),
+            nn.BatchNorm1d(16),
             nn.GELU(),
             nn.Dropout(0.1),
         )
         self.block1 = DepthwiseSeparableConv1d(16, 32, kernel_size=31, dilation=1)
         self.block2 = DepthwiseSeparableConv1d(32, 48, kernel_size=41, dilation=2)
         self.block3 = DepthwiseSeparableConv1d(48, 64, kernel_size=51, dilation=3)
-        self.head_gn = nn.GroupNorm(1, 64)
+        self.head_bn = nn.BatchNorm1d(64)
         self.head_act = nn.GELU()
         self.dropout = nn.Dropout(0.25)
         self.classifier = nn.Linear(64, n_classes)
@@ -221,7 +233,7 @@ class TinyBlinkNet(nn.Module):
         x = self.block1(x)
         x = self.block2(x)
         x = self.block3(x)
-        x = self.head_gn(x)
+        x = self.head_bn(x)
         x = self.head_act(x)
         x = x.mean(dim=-1)              # GAP over time -> (B, 64)
         x = self.dropout(x)
@@ -298,8 +310,10 @@ def main():
     fs = float(d.fs)
     print(f"   fs={fs:.1f} Hz, seconds={d.data.shape[1]/fs:.1f}, chans={d.data.shape[0]}")
 
-    # 2) Window the data (no pre-filter; per-window preprocessing will be applied)
-    cont = d.data.astype(np.float32)  # (C,T)
+    # 2) Window the filtered data
+    #    We’ll prefilter before windowing so edges are consistent
+    print("🔧 Bandpass 0.1–15 Hz on continuous...")
+    cont = bandpass_filter(d.data, 0.1, 15.0, fs, order=4).astype(np.float32)  # (C,T)
     print("🔪 Windowing...")
     X, y = window_stage(cont, d.labels, fs, window_s=args.window_s, hop_s=args.hop_s)  # X:(N, C, T), y:(N,)
     print(f"   Windows: {X.shape[0]}, shape={X.shape}")
@@ -368,8 +382,6 @@ def main():
                 "model": "TinyBlinkNet",
                 "timestamp": time.time(),
                 "seed": int(args.seed),
-                "fp_indices": [int(idx_fp1), int(idx_fp2)],
-                "chan_names": list(map(str, ch_names)) if ch_names is not None else None,
             },
         }
         torch.save(save_obj, "blinknet.pt")
