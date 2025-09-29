@@ -73,6 +73,33 @@ def pick_value(name: str, cli_value: float, meta: Dict[str, Any], use_meta: bool
         return float(meta[name])
     return float(cli_value if cli_value is not None else default)
 
+def parse_chs_arg(chs: str, total_ch: int):
+    """
+    Parse --chs hyperparameter.
+    - "": returns None (use meta or default)
+    - "all" or "*": returns "all"
+    - "1,2,3": returns a list of zero-based indices [0,1,2], filtered to valid range and deduped.
+    """
+    s = (chs or "").strip()
+    if not s:
+        return None
+    s_lower = s.lower()
+    if s_lower in ("all", "*"):
+        return "all"
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    idxs = []
+    seen = set()
+    for p in parts:
+        if not p.isdigit():
+            continue
+        i1 = int(p)
+        i0 = i1 - 1  # convert to 0-based
+        if 0 <= i0 < int(total_ch) and i0 not in seen:
+            seen.add(i0)
+            idxs.append(i0)
+    if not idxs:
+        return None
+    return idxs
 
 def infer(args):
     weights_path = Path(args.weights).resolve()
@@ -106,32 +133,52 @@ def infer(args):
     X, y = window_stage(cont, d.labels, fs, window_s=float(window_s), hop_s=float(hop_s))  # X:(N,C,T)
     print(f"Model={model_key} | Windows: {X.shape[0]} | X shape={X.shape} | fs={fs:.1f}Hz | win={window_s} hop={hop_s}")
 
-    # Channel selection (prefer explicit fp_indices in meta if available and enabled)
+    # Channel selection via --chs (1-based), meta chs_indices, or legacy Fp selection
     try:
         ch_names = getattr(d, "chan_names", None)
     except Exception:
         ch_names = None
 
-    idx_fp1, idx_fp2 = None, None
-    if use_meta:
-        # Try new hparams, then legacy meta
-        h = meta.get("hparams") if isinstance(meta.get("hparams"), dict) else {}
-        fp = h.get("fp_indices") if isinstance(h.get("fp_indices"), (list, tuple)) else meta.get("fp_indices")
-        if isinstance(fp, (list, tuple)) and len(fp) == 2:
-            idx_fp1, idx_fp2 = int(fp[0]), int(fp[1])
+    total_ch = X.shape[1]
+    # Helper for nice printing
+    def _safe_names(indices):
+        if ch_names:
+            return [str(ch_names[i]) if 0 <= i < len(ch_names) else f"ch{i}" for i in indices]
+        return [f"ch{i}" for i in indices]
 
-    if idx_fp1 is None or idx_fp2 is None:
-        idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+    # 1) CLI --chs
+    chs_arg = parse_chs_arg(getattr(args, "chs", ""), total_ch=total_ch)
+    chs_used: List[int]
+    used_fp = False
+    if chs_arg is None:
+        # 2) Try checkpoint meta chs_indices
+        if use_meta:
+            h = meta.get("hparams") if isinstance(meta.get("hparams"), dict) else {}
+            ci = h.get("chs_indices") if isinstance(h.get("chs_indices"), (list, tuple)) else meta.get("chs_indices")
+            if isinstance(ci, (list, tuple)) and len(ci) >= 1:
+                chs_used = [int(i) for i in ci if 0 <= int(i) < total_ch]
+            else:
+                chs_used = []
+        else:
+            chs_used = []
+        # 3) Legacy fallback: pick Fp1/Fp2 (falls back to 0,1)
+        if not chs_used:
+            idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+            chs_used = [int(idx_fp1), int(idx_fp2)]
+            used_fp = True
+    elif chs_arg == "all":
+        chs_used = list(range(total_ch))
+    else:
+        chs_used = list(map(int, chs_arg))
 
-    # Validate indices
-    if not (0 <= idx_fp1 < X.shape[1] and 0 <= idx_fp2 < X.shape[1] and idx_fp1 != idx_fp2):
-        print("[warn] Invalid fp_indices; falling back to (0,1)")
-        idx_fp1, idx_fp2 = 0, 1 if X.shape[1] > 1 else 0
+    if not chs_used:
+        raise SystemExit("No valid channels selected. Use --chs 'all' or a comma list like --chs 1,2,3")
 
-    X2 = X[:, [idx_fp1, idx_fp2], :]  # (N,2,T)
+    X = X[:, chs_used, :]  # (N,C,T) with selected channels
+    print(f"Using channels: indices={chs_used} names={_safe_names(chs_used)}")
 
-    # Preprocess to (N,4,T)
-    X4 = offline_prepare_X4(X2, fs).astype(np.float32)
+    # Preprocess to (N,C,T)
+    Xp = offline_prepare_X4(X, fs).astype(np.float32)
 
     # Build model and load weights
     if "classifier.weight" in state_dict:
@@ -141,7 +188,12 @@ def infer(args):
         n_classes = int(len(classes) or 3)
 
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = ModelClass(n_classes=n_classes).to(device)
+    n_in_ch = int(Xp.shape[1])
+    try:
+        model = ModelClass(n_classes=n_classes, n_in_ch=n_in_ch).to(device)
+    except TypeError:
+        model = ModelClass(n_classes=n_classes).to(device)
+
     try:
         model.load_state_dict(state_dict, strict=True)
     except Exception as e:
@@ -150,13 +202,13 @@ def infer(args):
     model.eval()
 
     # Inference
-    X_tensor = torch.from_numpy(X4).to(device)
+    X_tensor = torch.from_numpy(Xp).to(device)
     with torch.no_grad():
         logits = model(X_tensor)
         preds = torch.argmax(logits, dim=1).cpu().numpy()
         probs = torch.softmax(logits, dim=1).cpu().numpy()
 
-    print(f"Classes: {n_classes} | FpIdx=({idx_fp1},{idx_fp2}) | First 20 preds: {preds[:20]}")
+    print(f"Classes: {n_classes} | n_in_ch={n_in_ch} | First 20 preds: {preds[:20]}")
     uniq, cnts = np.unique(preds, return_counts=True)
     print("Class histogram:", {int(u): int(c) for u, c in zip(uniq, cnts)})
 
@@ -178,6 +230,7 @@ def parse_args():
     ap.add_argument("--device", type=str, default=None, help="cuda|cpu (auto if not set)")
     ap.add_argument("--save_csv", type=str, default="", help="Optional path to save predictions as CSV")
     ap.add_argument("--no_meta", action="store_true", help="Disable reading hyperparameters from checkpoint meta")
+    ap.add_argument("--chs", type=str, default="", help="Channel selection hyperparameter: 'all' or comma-separated 1-based indices (e.g., '1,2,3,4'). Empty uses meta or legacy Fp selection")
     return ap.parse_args()
 
 

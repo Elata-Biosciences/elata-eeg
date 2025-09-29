@@ -54,19 +54,47 @@ def set_seed(seed: int = 1337):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+def parse_chs_arg(chs: str, total_ch: int):
+    """
+    Parse --chs hyperparameter.
+    - "": returns None (legacy behavior)
+    - "all" or "*": returns "all"
+    - "1,2,3": returns a list of zero-based indices [0,1,2], filtered to valid range.
+    """
+    s = (chs or "").strip()
+    if not s:
+        return None
+    s_lower = s.lower()
+    if s_lower in ("all", "*"):
+        return "all"
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    idxs = []
+    seen = set()
+    for p in parts:
+        if not p.isdigit():
+            continue
+        i1 = int(p)
+        i0 = i1 - 1  # convert to 0-based
+        if 0 <= i0 < int(total_ch) and i0 not in seen:
+            seen.add(i0)
+            idxs.append(i0)
+    if not idxs:
+        return None
+    return idxs
+
 
 class GenericWindows(Dataset):
     """
     Dataset that applies the model's offline preparation pipeline per window.
-    Expects X of shape (N, 2, T) and y of shape (N,).
+    Expects X of shape (N, C, T) and y of shape (N,).
     """
     def __init__(self, X: np.ndarray, y: np.ndarray, fs: float, offline_prepare_X4, train: bool):
-        assert X.ndim == 3 and X.shape[1] == 2, "Expected X shape (N, 2, T)"
+        assert X.ndim == 3 and X.shape[1] >= 1, "Expected X shape (N, C, T)"
         self.fs = float(fs)
         self.train = bool(train)
-        # Apply canonical preprocessing: expand→bandpass→zscore (model-provided)
-        X4 = offline_prepare_X4(X, self.fs)  # (N, 4, T)
-        self.X = X4.astype(np.float32)
+        # Apply canonical preprocessing (model-provided)
+        Xp = offline_prepare_X4(X, self.fs)  # (N, C, T)
+        self.X = Xp.astype(np.float32)
         self.y = y.astype(np.int64)
 
     def __len__(self):
@@ -154,6 +182,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--device", type=str, default=None, help="cuda|cpu (auto if not set)")
     ap.add_argument("--save", type=str, default="", help="Output weights path (default: <model>.pt)")
+    ap.add_argument("--chs", type=str, default="", help="Channel selection hyperparameter: 'all' or comma-separated 1-based indices (e.g., '1,2,3,4'). Empty=legacy behavior")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -176,14 +205,33 @@ def main():
     print("🔪 Windowing...")
     X, y = window_stage(cont, d.labels, fs, window_s=args.window_s, hop_s=args.hop_s)  # X:(N, C, T), y:(N,)
     print(f"   Windows: {X.shape[0]}, shape={X.shape}")
-
-    # Restrict to Fp1/Fp2 channels using model-provided selector
+    
+    # Channel selection
     try:
         ch_names = getattr(d, "chan_names", None)
     except Exception:
         ch_names = None
-    idx_fp1, idx_fp2 = select_fp_indices(ch_names)
-    X = X[:, [idx_fp1, idx_fp2], :]  # keep 2-ch
+
+    total_ch = X.shape[1]
+    def _safe_names(indices):
+        if ch_names:
+            return [str(ch_names[i]) if 0 <= i < len(ch_names) else f"ch{i}" for i in indices]
+        return [f"ch{i}" for i in indices]
+
+    chs_arg = parse_chs_arg(args.chs, total_ch=total_ch)
+    used_fp = False
+    if chs_arg is None:
+        # Legacy behavior: pick Fp1/Fp2 (falls back to 0,1)
+        idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+        chs_used = [int(idx_fp1), int(idx_fp2)]
+        used_fp = True
+    elif chs_arg == "all":
+        chs_used = list(range(total_ch))
+    else:
+        chs_used = list(map(int, chs_arg))
+
+    X = X[:, chs_used, :]
+    print(f"   Using channels: indices={chs_used} names={_safe_names(chs_used)}")
 
     # Split
     X_train, X_val, y_train, y_val = train_test_split(
@@ -199,9 +247,16 @@ def main():
     # Model & training setup
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"🚀 Device: {device}")
-
+    
     n_classes = int(np.unique(y).size)
-    model = ModelClass(n_classes=n_classes).to(device)
+    try:
+        n_in_ch = int(tr_ds.X.shape[1])  # set below after dataset creation
+    except NameError:
+        n_in_ch = int(X.shape[1])  # fallback
+    try:
+        model = ModelClass(n_classes=n_classes, n_in_ch=n_in_ch).to(device)
+    except TypeError:
+        model = ModelClass(n_classes=n_classes).to(device)
 
     class_w = compute_class_weights(y_train).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_w)
@@ -231,19 +286,23 @@ def main():
     out_path = args.save.strip() or f"{args.model}.pt"
     try:
         bandpass = [0.1, 15.0, 4]
-        hparams = {
+        hparams: Dict[str, Any] = {
             "model_key": str(args.model),
             "pipeline_version": "1.0",
             "window_s": float(args.window_s),
             "hop_s": float(args.hop_s),
             "bandpass": bandpass,
             "norm": "zscore_per_window",
-            "features": "fp1_fp2_diff_sum",
+            "features": "per_channel_bandpass_zscore",
             "seed": int(args.seed),
             "classes": [int(c) for c in sorted(np.unique(y))],
-            "fp_indices": [int(idx_fp1), int(idx_fp2)],
+            "chs_indices": [int(i) for i in chs_used],
+            "n_in_ch": int(tr_ds.X.shape[1]),
             "chan_names": list(map(str, ch_names)) if ch_names is not None else None,
         }
+        if 'idx_fp1' in locals() and 'idx_fp2' in locals() and used_fp:
+            hparams["fp_indices"] = [int(idx_fp1), int(idx_fp2)]
+
         save_obj = {
             "state_dict": model.state_dict(),
             "meta": {
@@ -255,8 +314,8 @@ def main():
                 "model": hparams["model_key"],
                 "timestamp": time.time(),
                 "seed": hparams["seed"],
-                "fp_indices": hparams["fp_indices"],
-                "chan_names": hparams["chan_names"],
+                "fp_indices": hparams.get("fp_indices"),
+                "chan_names": hparams.get("chan_names"),
                 "bandpass": bandpass,
                 # New structured hparams block
                 "hparams": hparams,

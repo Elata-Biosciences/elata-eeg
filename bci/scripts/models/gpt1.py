@@ -81,23 +81,18 @@ def expand_to_4ch(fp1, fp2):
     return X4
 
 
-def offline_prepare_X4(X2, fs):
+def offline_prepare_X4(XC, fs):
     """
-    X2: (N, 2, T) → expands to (N, 4, T), bandpass 0.1–15 Hz, z-score per window (matches training).
+    XC: (N, C, T) → per-channel bandpass 0.1–15 Hz and per-window z-score; returns (N, C, T).
+    Channel-agnostic to support arbitrary selections (e.g., 2, 8, ...).
     """
-    assert X2.ndim == 3 and X2.shape[1] == 2, "Expected X shape (N, 2, T)"
-    N = X2.shape[0]
-    fp1 = X2[:, 0, :]
-    fp2 = X2[:, 1, :]
-    diff = fp1 - fp2
-    sumv = 0.5 * (fp1 + fp2)
-    X4 = np.stack([fp1, fp2, diff, sumv], axis=1).astype(np.float32)  # (N,4,T)
-
-    # Bandpass + standardize per window
+    assert XC.ndim == 3 and XC.shape[1] >= 1, "Expected X shape (N, C, T)"
+    N = XC.shape[0]
+    Xp = XC.astype(np.float32, copy=True)
     for i in range(N):
-        X4[i] = bandpass_filter(X4[i], 0.1, 15.0, float(fs), order=4).astype(np.float32)
-        X4[i] = standardize_per_window(X4[i]).astype(np.float32)
-    return X4.astype(np.float32)
+        Xp[i] = bandpass_filter(Xp[i], 0.1, 15.0, float(fs), order=4).astype(np.float32)
+        Xp[i] = standardize_per_window(Xp[i]).astype(np.float32)
+    return Xp.astype(np.float32)
 
 
 def make_stream_transform(fs):
@@ -196,14 +191,14 @@ class DepthwiseSeparableConv1d(nn.Module):
 
 class TinyBlinkNet(nn.Module):
     """
-    Input: (B, 4, T)  [Fp1, Fp2, diff, sum]
+    Input: (B, C, T) with arbitrary channels (C>=1).
     Stack of temporal depthwise separable convs with increasing receptive field.
-    Global average pool over time → linear → 3 classes.
+    Global average pool over time → linear → n_classes.
     """
-    def __init__(self, n_classes: int = 3):
+    def __init__(self, n_classes: int = 3, n_in_ch: int = 4):
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv1d(4, 16, kernel_size=11, padding=5, bias=False),
+            nn.Conv1d(n_in_ch, 16, kernel_size=11, padding=5, bias=False),
             nn.GroupNorm(1, 16),
             nn.GELU(),
             nn.Dropout(0.1),
@@ -216,7 +211,7 @@ class TinyBlinkNet(nn.Module):
         self.dropout = nn.Dropout(0.25)
         self.classifier = nn.Linear(64, n_classes)
 
-    def forward(self, x):               # x: (B, 4, T)
+    def forward(self, x):               # x: (B, C, T)
         x = self.stem(x)
         x = self.block1(x)
         x = self.block2(x)
