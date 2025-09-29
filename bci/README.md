@@ -145,11 +145,19 @@ From `bci/scripts`:
 - Eye blinks / eye direction (automatic frontal selection and EOG band):
   - `PYTHONPATH=../.. python models/train.py --model eog --npz data/rez1.npz --window_s 1.0 --hop_s 0.25 --epochs 50 --batch 64 --lr 3e-4 --seed 1337`
 
-- Imagined tongue movement (lateral frontal/temporal, mu/beta band):
+- Imagined tongue movement pipeline (with simulated data first):
+  1) Generate synthetic dataset:
+     - `PYTHONPATH=../.. python data/simulate_mi_tongue.py --out data/mi_tongue_sim.npz --seconds 60 --labels "left,right" --fs 250 --channels 2`
+  2) Train mi_tongue on the simulated data:
+     - `PYTHONPATH=../.. python models/train.py --model mi_tongue --npz data/mi_tongue_sim.npz --chs 1,2 --window_s 1.0 --hop_s 0.25 --epochs 20 --batch 64 --lr 3e-3 --seed 1337`
+  3) Offline evaluate with the checkpoint:
+     - `PYTHONPATH=../.. python models/infer.py --model auto --weights /tmp/mi_tongue_sim.pt --npz data/mi_tongue_sim.npz`
+
+- Real data imagined tongue movement (lateral frontal/temporal, mu/beta band):
   - `PYTHONPATH=../.. python models/train.py --model mi_tongue --npz data/rez1.npz --window_s 1.0 --hop_s 0.25 --epochs 50 --batch 64 --lr 3e-4 --seed 1337`
 
-- If you know the exact channels (e.g., channels 1 and 2 correspond to Fp1/Fp2):
-  - `PYTHONPATH=../.. python models/train.py --model eog --npz data/rez1.npz --chs 1,2 --epochs 50`
+- If you know the exact channels (e.g., channels 1 and 2 correspond to F7/F8 or AF7/AF8):
+  - `PYTHONPATH=../.. python models/train.py --model mi_tongue --npz data/rez1.npz --chs 1,2 --epochs 50`
 
 - Try label lag compensation (example +600 ms):
   - `PYTHONPATH=../.. python models/train.py --model eog --npz data/rez1.npz --label_offset_ms 600 --epochs 50`
