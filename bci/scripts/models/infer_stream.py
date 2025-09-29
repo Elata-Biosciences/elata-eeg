@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-infer_stream_gpt1.py — Stream EEG via WS and run TinyBlinkNet inference.
+Generic streaming inference via model registry.
 
-Usage examples:
-  # Default host/topic/epoch; looks for blinknet.pt in CWD
-  python bci/scripts/models/infer_stream_gpt1.py
+Usage:
+  # Stream inference using gpt1 pipeline
+  python bci/scripts/models/infer_stream.py --model gpt1 --weights gpt1.pt --host ws://raspberrypi.local --topic eeg_voltage --epoch 1
 
-  # Explicit weights and device
-  python bci/scripts/models/infer_stream_gpt1.py --weights blinknet.pt --device cpu
-
-  # Custom host/topic and hop/window
-  python bci/scripts/models/infer_stream_gpt1.py --host raspberrypi.local --topic eeg_voltage --epoch 1 --window_s 1.0 --hop_s 0.25
+  # With smoothing/EMA and explicit channels
+  python bci/scripts/models/infer_stream.py --model gpt1 --weights gpt1.pt --smooth 3 --ema_alpha 0.2 --fp1 0 --fp2 1
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-# Make imports work when running this file directly
+# Path setup so running this file directly works
 HERE = Path(__file__).resolve().parent                 # .../bci/scripts/models
 SCRIPTS_DIR = HERE.parent                              # .../bci/scripts
 if str(HERE) not in sys.path:
@@ -34,14 +32,8 @@ if str(HERE) not in sys.path:
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-# Import model/DSP helpers and websocket client
-try:
-    from gpt1 import TinyBlinkNet, make_stream_transform, select_fp_indices  # type: ignore
-except Exception as e:
-    print(f"❌ Could not import TinyBlinkNet/DSP from gpt1.py: {e}")
-    print("Ensure PYTHONPATH includes bci/scripts/models or run from repo root.")
-    sys.exit(1)
-
+# Registry + ws client
+from registry import get_spec  # type: ignore
 try:
     from ws_client import start_data_ws  # type: ignore
 except Exception as e:
@@ -75,31 +67,19 @@ def extract_names(header: Dict[str, Any], meta: Optional[Dict[str, Any]], num_ch
     return names
 
 
-def find_fp_indices(names: List[str]) -> Tuple[int, int]:
-    # Prefer exact "Fp1"/"Fp2", else try case-insensitive contains
-    lower = [n.lower() for n in names]
-    try:
-        i1 = lower.index("fp1")
-    except ValueError:
-        i1 = 0
-    try:
-        i2 = lower.index("fp2")
-    except ValueError:
-        i2 = 1 if len(names) > 1 else 0
-    if i1 == i2:
-        # Fall back to first two distinct channels if possible
-        i1, i2 = 0, 1 if len(names) > 1 else 0
-    return i1, i2
-
-
 @dataclass
 class StreamState:
     device: torch.device
-    model: TinyBlinkNet
+    model: torch.nn.Module
+    transform_factory: Any  # make_stream_transform(fs) -> callable
+    select_fp_indices: Any  # function(chan_names) -> (i1, i2)
     window_s: float = 1.0
     hop_s: float = 0.25
-    smooth_k: int = 0  # rolling majority vote window (0 disables)
-    ema_alpha: float = 0.0  # EMA of probabilities (0 disables)
+    smooth_k: int = 0
+    ema_alpha: float = 0.0
+
+    # Preferred FP indices (from weights meta or CLI), optional
+    prefer_idx: Optional[Tuple[int, int]] = None
 
     # Runtime/updatable fields
     fs: float = 250.0
@@ -109,19 +89,15 @@ class StreamState:
     idx_fp2: int = 1
     window_len: int = 250
     hop_len: int = 62
+
     # Buffers store raw stream values
     buf_fp1: List[float] = field(default_factory=list)
     buf_fp2: List[float] = field(default_factory=list)
     next_start: int = 0  # next window start index (in samples) for inference
     pred_hist: deque = field(default_factory=deque)
 
-    # Preferred FP indices from checkpoint meta (optional)
-    prefer_idx: Optional[Tuple[int, int]] = None
-
-    # Preprocessing transform cached per fs
+    # Cached transform and EMA state
     transform: Optional[Any] = None
-
-    # EMA state
     prob_ema: Optional[np.ndarray] = None
 
     def update_fs_and_channels(self, header: Dict[str, Any], meta: Optional[Dict[str, Any]], samples: np.ndarray):
@@ -135,22 +111,22 @@ class StreamState:
             self.num_channels = int(num_ch)
             self.chan_names = names
 
-            # Choose FP indices: prefer checkpoint-provided if valid, else heuristic
+            # Choose FP indices: prefer checkpoint/CLI-provided if valid, else heuristic
             if self.prefer_idx is not None:
                 i1, i2 = int(self.prefer_idx[0]), int(self.prefer_idx[1])
                 if 0 <= i1 < self.num_channels and 0 <= i2 < self.num_channels and i1 != i2:
                     self.idx_fp1, self.idx_fp2 = i1, i2
                 else:
-                    self.idx_fp1, self.idx_fp2 = select_fp_indices(self.chan_names)
+                    self.idx_fp1, self.idx_fp2 = self.select_fp_indices(self.chan_names)
             else:
-                self.idx_fp1, self.idx_fp2 = select_fp_indices(self.chan_names)
+                self.idx_fp1, self.idx_fp2 = self.select_fp_indices(self.chan_names)
 
             self.window_len = max(1, int(round(self.window_s * self.fs)))
             self.hop_len = max(1, int(round(self.hop_s * self.fs)))
             self.next_start = max(0, len(self.buf_fp1) - (len(self.buf_fp1) % self.hop_len))  # align to hop
 
             # Reset transform and EMA on fs change
-            self.transform = make_stream_transform(self.fs)
+            self.transform = self.transform_factory(self.fs)
             self.prob_ema = None
 
             print(
@@ -167,6 +143,8 @@ class StreamState:
             return
 
         # (batch, channels)
+        if self.idx_fp1 >= samples.shape[1] or self.idx_fp2 >= samples.shape[1]:
+            return
         fp1 = samples[:, self.idx_fp1].astype(np.float32)
         fp2 = samples[:, self.idx_fp2].astype(np.float32)
         self.buf_fp1.extend(fp1.tolist())
@@ -176,7 +154,6 @@ class StreamState:
         return max(0, min(len(self.buf_fp1), len(self.buf_fp2)) - self.next_start)
 
     def next_window(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        # Provide the next [0:window_len] slice starting at next_start, if available
         if self.available() < self.window_len:
             return None
         s = self.next_start
@@ -224,66 +201,79 @@ class StreamState:
         return int(vals[int(np.argmax(cnts))])
 
 
-async def stream_infer(args):
-    # Load checkpoint (supports {"state_dict","meta"} or raw state_dict)
-    ckpt = torch.load(args.weights, map_location="cpu")
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:
-        state_dict = ckpt["state_dict"]
-        meta = ckpt.get("meta", {}) or {}
+def load_weights(weights_path: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    obj = torch.load(str(weights_path), map_location="cpu")
+    meta: Dict[str, Any] = {}
+    if isinstance(obj, dict) and "state_dict" in obj:
+        state_dict = obj["state_dict"]
+        meta = (obj.get("meta") or {})
     else:
-        state_dict = ckpt
-        meta = {}
+        # raw state dict
+        state_dict = obj
+    return state_dict, meta
 
-    # Determine n_classes
+
+async def stream_infer(args):
+    # Load weights/meta first to resolve model and hyperparameters
+    state_dict, meta = load_weights(Path(args.weights))
+    h = meta.get("hparams") if isinstance(meta.get("hparams"), dict) else {}
+
+    # Resolve model key (auto from checkpoint unless explicitly provided)
+    if args.model and args.model.lower() != "auto":
+        model_key = args.model
+    else:
+        model_key = str(h.get("model_key") or meta.get("model") or "gpt1")
+
+    # Resolve model spec
+    spec = get_spec(model_key)
+    ModelClass = spec["model_class"]
+    transform_factory = spec["make_stream_transform"]
+    select_fp_indices = spec["select_fp_indices"]
+
+    # Determine classes
     if "classifier.weight" in state_dict:
         n_classes = int(state_dict["classifier.weight"].shape[0])
-    elif isinstance(meta.get("classes"), (list, tuple)) and len(meta["classes"]) > 0:
-        n_classes = int(len(meta["classes"]))
     else:
-        n_classes = 3
+        classes = (h.get("classes") if isinstance(h, dict) else meta.get("classes", []))
+        n_classes = int(len(classes) or 3)
 
-    # Preferred FP indices from meta (optional)
+    # Device/model
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    model = ModelClass(n_classes=n_classes).to(device)
+    try:
+        model.load_state_dict(state_dict, strict=True)
+    except Exception as e:
+        print(f"[warn] strict load failed ({e}); retrying with strict=False")
+        model.load_state_dict(state_dict, strict=False)
+    model.eval()
+
+    # Use checkpoint meta values by default unless --no_meta
+    use_meta = not bool(args.no_meta)
+    if use_meta:
+        window_s = float(h.get("window_s", meta.get("window_s", args.window_s)))
+        hop_s = float(h.get("hop_s", meta.get("hop_s", args.hop_s)))
+    else:
+        window_s = float(args.window_s)
+        hop_s = float(args.hop_s)
+
+    # Preferred FP indices from meta or CLI
     prefer_idx = None
-    if isinstance(meta.get("fp_indices"), (list, tuple)) and len(meta["fp_indices"]) == 2:
-        prefer_idx = (int(meta["fp_indices"][0]), int(meta["fp_indices"][1]))
-    # CLI override if provided
+    if use_meta:
+        fp = (h.get("fp_indices") if isinstance(h, dict) else None)
+        if not isinstance(fp, (list, tuple)):
+            fp = meta.get("fp_indices")
+        if isinstance(fp, (list, tuple)) and len(fp) == 2:
+            prefer_idx = (int(fp[0]), int(fp[1]))
     if getattr(args, "fp1", None) is not None and args.fp1 >= 0 and getattr(args, "fp2", None) is not None and args.fp2 >= 0:
         prefer_idx = (int(args.fp1), int(args.fp2))
-
-    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = TinyBlinkNet(n_classes=n_classes).to(device)
-
-    # Load with BN→GN compatibility: remap keys and drop BN running buffers
-    sd = {}
-    for k, v in state_dict.items():
-        if any(s in k for s in ("running_mean", "running_var", "num_batches_tracked")):
-            continue
-        nk = k.replace(".bn.", ".gn.").replace("head_bn.", "head_gn.")
-        sd[nk] = v
-    load_res = model.load_state_dict(sd, strict=False)
-    model.eval()
-    try:
-        missing = getattr(load_res, "missing_keys", [])
-        unexpected = getattr(load_res, "unexpected_keys", [])
-        if missing or unexpected:
-            print(f"[warn] load_state: missing={missing} unexpected={unexpected}")
-    except Exception:
-        pass
-
-    # Warn if channel names don't include Fp1/Fp2 and no indices provided
-    try:
-        chn = meta.get("chan_names") if isinstance(meta.get("chan_names"), (list, tuple)) else None
-        if prefer_idx is None and not (chn and any(str(x).lower() == "fp1" for x in chn) and any(str(x).lower() == "fp2" for x in chn)):
-            print("[warn] No fp_indices in checkpoint and channel names do not include Fp1/Fp2. "
-                  "Consider passing --fp1/--fp2 to select the correct channels.")
-    except Exception:
-        pass
 
     state = StreamState(
         device=device,
         model=model,
-        window_s=float(args.window_s),
-        hop_s=float(args.hop_s),
+        transform_factory=transform_factory,
+        select_fp_indices=select_fp_indices,
+        window_s=float(window_s),
+        hop_s=float(hop_s),
         smooth_k=int(args.smooth) if args.smooth and args.smooth > 0 else 0,
         ema_alpha=float(args.ema_alpha) if args.ema_alpha and args.ema_alpha > 0 else 0.0,
         prefer_idx=prefer_idx,
@@ -337,17 +327,18 @@ async def stream_infer(args):
 
     print(
         f"🚀 Streaming inference: host={args.host} topic={args.topic} epoch={args.epoch} "
-        f"| weights={args.weights} | device={device}"
+        f"| weights={args.weights} | device={device} | model={model_key} | win={window_s} hop={hop_s}"
     )
     await start_data_ws(args.host, [(args.topic, int(args.epoch))], on_packet)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Streaming inference for TinyBlinkNet over WS")
-    ap.add_argument("--host", type=str, default="raspberrypi.local", help="Data host")
-    ap.add_argument("--topic", type=str, default="eeg_voltage", help="Topic name to subscribe to")
-    ap.add_argument("--epoch", type=int, default=1, help="Epoch to subscribe with")
-    ap.add_argument("--weights", type=str, default="blinknet.pt", help="Path to model weights")
+def parse_args():
+    ap = argparse.ArgumentParser(description="Generic streaming inference via model registry")
+    ap.add_argument("--model", type=str, default="auto", help="Model key (e.g., gpt1, gpt2) or 'auto' to read from checkpoint")
+    ap.add_argument("--weights", type=str, default="gpt1.pt", help="Path to model weights .pt")
+    ap.add_argument("--host", type=str, default="raspberrypi.local")
+    ap.add_argument("--topic", type=str, default="eeg_voltage")
+    ap.add_argument("--epoch", type=int, default=1)
     ap.add_argument("--window_s", type=float, default=1.0, help="Window length (seconds)")
     ap.add_argument("--hop_s", type=float, default=0.25, help="Hop length (seconds)")
     ap.add_argument("--device", type=str, default=None, help="cuda|cpu (auto if not set)")
@@ -356,8 +347,12 @@ def main():
     ap.add_argument("--fp1", type=int, default=-1, help="Force FP1 channel index (overrides meta)")
     ap.add_argument("--fp2", type=int, default=-1, help="Force FP2 channel index (overrides meta)")
     ap.add_argument("--debug", action="store_true", help="Enable verbose per-window diagnostics")
-    args = ap.parse_args()
+    ap.add_argument("--no_meta", action="store_true", help="Disable reading hyperparameters from checkpoint meta")
+    return ap.parse_args()
 
+
+def main():
+    args = parse_args()
     try:
         asyncio.run(stream_infer(args))
     except KeyboardInterrupt:
