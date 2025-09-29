@@ -2,13 +2,11 @@
 
 SCRIPT_DIR=scripts
 
-while [ $# -gt 0 ]; do
-  case $1 in 
-    sim*) ACTION=bci_mi_pipeline;;
-    infer*) ACTION=bci_infer_stream;;
-    *) ACTION=$1;;
-  esac
+case $1 in 
+  sim*) ACTION=bci_mi_pipeline;;
+  infer*) ACTION=bci_infer_stream;;
+  *) ACTION=$1;;
+esac
 
-  bash "$SCRIPT_DIR/$ACTION.sh"
-  shift
-done
+shift
+bash "$SCRIPT_DIR/$ACTION.sh" "$@"
