@@ -25,6 +25,10 @@ from typing import Any, Dict
 DEFAULT_MODULES: Dict[str, str] = {
     # Back-compat: map short name to current gpt1 module
     "gpt1": "bci.scripts.models.gpt1",
+    # Additional built-ins
+    "gpt1_amp": "bci.scripts.models.model_gpt1_amp",
+    "eog": "bci.scripts.models.model_eog",
+    "eegnet_mi": "bci.scripts.models.eegnet",
 }
 
 

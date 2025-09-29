@@ -172,7 +172,7 @@ def eval_model(model, loader, device, criterion):
 
 def main():
     ap = argparse.ArgumentParser(description="Generic trainer for EEG BCI models via registry")
-    ap.add_argument("--model", type=str, default="gpt1", help="Model key (e.g., gpt1, gpt2)")
+    ap.add_argument("--model", type=str, default="gpt1", help="Model key (e.g., gpt1, gpt2, eog, eegnet_mi)")
     ap.add_argument("--npz", type=str, default="bci/scripts/data/session2.npz", help="Input npz path")
     ap.add_argument("--window_s", type=float, default=1.0, help="Window length (s)")
     ap.add_argument("--hop_s", type=float, default=0.25, help="Hop length (s)")
@@ -183,6 +183,10 @@ def main():
     ap.add_argument("--device", type=str, default=None, help="cuda|cpu (auto if not set)")
     ap.add_argument("--save", type=str, default="", help="Output weights path (default: <model>.pt)")
     ap.add_argument("--chs", type=str, default="", help="Channel selection hyperparameter: 'all' or comma-separated 1-based indices (e.g., '1,2,3,4'). Empty=legacy behavior")
+    ap.add_argument("--label_offset_ms", type=int, default=0, help="Shift labels by this many ms to account for reaction/cue lag")
+    ap.add_argument("--majority", type=float, default=0.70, help="Fraction threshold for majority voting during window labeling (0..1)")
+    ap.add_argument("--norm", type=str, default="per_window", choices=["per_window", "dataset"], help="Normalization mode")
+    ap.add_argument("--mode", type=str, default="auto", choices=["auto", "eog", "mi"], help="Task mode (affects channel defaults)")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -203,9 +207,22 @@ def main():
     # Window the data (no continuous pre-filter; per-window preprocessing applied in dataset)
     cont = d.data.astype(np.float32)  # (C,T)
     print("🔪 Windowing...")
-    X, y = window_stage(cont, d.labels, fs, window_s=args.window_s, hop_s=args.hop_s)  # X:(N, C, T), y:(N,)
+    X, y = window_stage(
+        cont,
+        d.labels,
+        fs,
+        window_s=args.window_s,
+        hop_s=args.hop_s,
+        label_mode="majority",
+        label_offset_ms=args.label_offset_ms,
+        majority=args.majority,
+    )  # X:(N, C, T), y:(N,)
     print(f"   Windows: {X.shape[0]}, shape={X.shape}")
-    
+    # Show class distribution post-windowing
+    classes, counts = np.unique(y, return_counts=True)
+    freq = {int(c): int(n) for c, n in zip(classes, counts)}
+    print(f"   Class counts: {freq}")
+
     # Channel selection
     try:
         ch_names = getattr(d, "chan_names", None)
@@ -220,15 +237,45 @@ def main():
 
     chs_arg = parse_chs_arg(args.chs, total_ch=total_ch)
     used_fp = False
+
+    # Prefer model-provided selector if available and user didn't specify --chs
+    chs_used = None
     if chs_arg is None:
-        # Legacy behavior: pick Fp1/Fp2 (falls back to 0,1)
-        idx_fp1, idx_fp2 = select_fp_indices(ch_names)
-        chs_used = [int(idx_fp1), int(idx_fp2)]
-        used_fp = True
-    elif chs_arg == "all":
-        chs_used = list(range(total_ch))
-    else:
-        chs_used = list(map(int, chs_arg))
+        sel_fn = spec.get("select_channel_indices") if isinstance(spec, dict) else None
+        if callable(sel_fn):
+            try:
+                cand = sel_fn(ch_names)
+                if cand and len(cand) >= 2:
+                    chs_used = [int(i) for i in cand]
+            except Exception:
+                chs_used = None
+
+    if chs_used is None:
+        if chs_arg is None:
+            # Mode-based fallback
+            def find_frontal_indices(names):
+                if not names:
+                    return None
+                lower = [str(n).lower() for n in names]
+                for a,b in [("fp1","fp2"), ("af7","af8"), ("f7","f8")]:
+                    if a in lower and b in lower:
+                        return [lower.index(a), lower.index(b)]
+                return None
+            if args.mode == "eog":
+                inds = find_frontal_indices(ch_names)
+                if not inds:
+                    idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+                    inds = [int(idx_fp1), int(idx_fp2)]
+                chs_used = inds
+                used_fp = True
+            else:
+                idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+                chs_used = [int(idx_fp1), int(idx_fp2)]
+                used_fp = True
+        elif chs_arg == "all":
+            chs_used = list(range(total_ch))
+        else:
+            chs_used = list(map(int, chs_arg))
 
     X = X[:, chs_used, :]
     print(f"   Using channels: indices={chs_used} names={_safe_names(chs_used)}")
@@ -238,9 +285,24 @@ def main():
         X, y, test_size=0.2, stratify=y, random_state=args.seed
     )
 
-    # Datasets/Loaders
-    tr_ds = GenericWindows(X_train, y_train, fs=fs, offline_prepare_X4=offline_prepare_X4, train=True)
-    va_ds = GenericWindows(X_val, y_val, fs=fs, offline_prepare_X4=offline_prepare_X4, train=False)
+    # Datasets/Loaders + normalization
+    norm_stats = None
+    if args.norm == "dataset":
+        # Apply model's offline prep first (e.g., bandpass, features), then dataset-level z-score per channel
+        X_train_prep = offline_prepare_X4(X_train, fs)
+        X_val_prep = offline_prepare_X4(X_val, fs)
+        mu = X_train_prep.mean(axis=(0, 2), keepdims=True)   # shape (1,C,1)
+        sd = X_train_prep.std(axis=(0, 2), keepdims=True)
+        sd = np.maximum(sd, 1e-6)
+        X_train_p = (X_train_prep - mu) / sd
+        X_val_p = (X_val_prep - mu) / sd
+        norm_stats = {"mu": mu.reshape(-1).astype(float).tolist(), "sd": sd.reshape(-1).astype(float).tolist()}
+        offline_prep_identity = lambda X, fs: X
+        tr_ds = GenericWindows(X_train_p, y_train, fs=fs, offline_prepare_X4=offline_prep_identity, train=True)
+        va_ds = GenericWindows(X_val_p, y_val, fs=fs, offline_prepare_X4=offline_prep_identity, train=False)
+    else:
+        tr_ds = GenericWindows(X_train, y_train, fs=fs, offline_prepare_X4=offline_prepare_X4, train=True)
+        va_ds = GenericWindows(X_val, y_val, fs=fs, offline_prepare_X4=offline_prepare_X4, train=False)
     tr_ld = DataLoader(tr_ds, batch_size=args.batch, shuffle=True, drop_last=False)
     va_ld = DataLoader(va_ds, batch_size=args.batch, shuffle=False, drop_last=False)
 
@@ -285,15 +347,24 @@ def main():
     # Save trained weights + metadata (checkpoint-driven hyperparameters)
     out_path = args.save.strip() or f"{args.model}.pt"
     try:
-        bandpass = [0.1, 15.0, 4]
+        # Bandpass hint based on model key
+        if str(args.model) in ("eog", "eog_amp"):
+            bandpass = [0.1, 5.0, 4]
+        elif str(args.model) in ("mi_tongue", "eegnet"):
+            bandpass = [8.0, 30.0, 4]
+        else:
+            bandpass = [0.1, 15.0, 4]
+        # Normalization info
+        norm_mode = "dataset" if args.norm == "dataset" else "zscore_per_window"
+        features_desc = "offline_prepare" + ("+dataset_zscore" if norm_mode == "dataset" else "")
         hparams: Dict[str, Any] = {
             "model_key": str(args.model),
             "pipeline_version": "1.0",
             "window_s": float(args.window_s),
             "hop_s": float(args.hop_s),
             "bandpass": bandpass,
-            "norm": "zscore_per_window",
-            "features": "per_channel_bandpass_zscore",
+            "norm": norm_mode,
+            "features": features_desc,
             "seed": int(args.seed),
             "classes": [int(c) for c in sorted(np.unique(y))],
             "chs_indices": [int(i) for i in chs_used],
@@ -302,6 +373,8 @@ def main():
         }
         if 'idx_fp1' in locals() and 'idx_fp2' in locals() and used_fp:
             hparams["fp_indices"] = [int(idx_fp1), int(idx_fp2)]
+        if norm_stats is not None:
+            hparams["norm_stats"] = norm_stats
 
         save_obj = {
             "state_dict": model.state_dict(),
