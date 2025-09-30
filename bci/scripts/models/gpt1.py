@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_recall_fscore_support, classification_report
 import matplotlib.pyplot as plt
 from scipy.signal import butter, lfilter
+import re
 
 # ----------------------------
 # Your helpers
@@ -68,6 +69,34 @@ def select_fp_indices(chan_names):
         return 0, 1
 
 
+def parse_channel_list(ch_text, n_chans):
+    """
+    Parse a user-provided '--channels' string into two 0-based indices.
+
+    Accepts formats like '4,5' or '4 5'. If both numbers are within 1..n_chans and 0 is not present,
+    interpret as 1-based and convert to 0-based. If any 0 is present, treat as 0-based.
+    Raises ValueError on invalid input.
+    """
+    s = str(ch_text).strip()
+    if not s:
+        raise ValueError("empty --channels")
+    parts = [p for p in re.split(r"[,\s]+", s) if p]
+    vals = [int(p) for p in parts]
+    if len(vals) != 2:
+        raise ValueError(f"expected exactly two indices, got {vals}")
+    if 0 in vals:
+        i, j = vals
+    else:
+        if 1 <= min(vals) and max(vals) <= n_chans:
+            i, j = vals[0] - 1, vals[1] - 1
+        else:
+            i, j = vals
+    if not (0 <= i < n_chans and 0 <= j < n_chans):
+        raise ValueError(f"indices out of range for {n_chans} channels: {i},{j}")
+    if i == j:
+        raise ValueError("indices must be distinct")
+    return int(i), int(j)
+
 def expand_to_4ch(fp1, fp2):
     """
     Given two 1-D arrays (T,), compute 4-channel features:
@@ -81,18 +110,23 @@ def expand_to_4ch(fp1, fp2):
     return X4
 
 
-def offline_prepare_X4(XC, fs):
+def offline_prepare_X4(X2, fs):
     """
-    XC: (N, C, T) → per-channel bandpass 0.1–15 Hz and per-window z-score; returns (N, C, T).
-    Channel-agnostic to support arbitrary selections (e.g., 2, 8, ...).
+    X2: (N, 2, T) → expands to (N, 4, T), bandpass 0.1–15 Hz, z-score per window (matches training).
     """
-    assert XC.ndim == 3 and XC.shape[1] >= 1, "Expected X shape (N, C, T)"
-    N = XC.shape[0]
-    Xp = XC.astype(np.float32, copy=True)
+    assert X2.ndim == 3 and X2.shape[1] == 2, "Expected X shape (N, 2, T)"
+    N = X2.shape[0]
+    fp1 = X2[:, 0, :]
+    fp2 = X2[:, 1, :]
+    diff = fp1 - fp2
+    sumv = 0.5 * (fp1 + fp2)
+    X4 = np.stack([fp1, fp2, diff, sumv], axis=1).astype(np.float32)  # (N,4,T)
+
+    # Bandpass + standardize per window
     for i in range(N):
-        Xp[i] = bandpass_filter(Xp[i], 0.1, 15.0, float(fs), order=4).astype(np.float32)
-        Xp[i] = standardize_per_window(Xp[i]).astype(np.float32)
-    return Xp.astype(np.float32)
+        X4[i] = bandpass_filter(X4[i], 0.1, 15.0, float(fs), order=4).astype(np.float32)
+        X4[i] = standardize_per_window(X4[i]).astype(np.float32)
+    return X4.astype(np.float32)
 
 
 def make_stream_transform(fs):
@@ -140,9 +174,21 @@ class BlinkWindows(Dataset):
         self.train = train
 
         assert X.ndim == 3 and X.shape[1] == 2, "Expected X shape (N, 2, T)"
-        # Use the exact same preprocessing as inference: expand→bandpass→zscore
-        X4 = offline_prepare_X4(X, self.fs)  # (N, 4, T)
-        self.X = X4.astype(np.float32)
+        fp1 = X[:, 0, :]
+        fp2 = X[:, 1, :]
+        diff = fp1 - fp2           # horizontal EOG (lateralization)
+        sumv = 0.5 * (fp1 + fp2)   # vertical EOG (blink strength)
+        X4 = np.stack([fp1, fp2, diff, sumv], axis=1)  # (N, 4, T)
+
+        # Bandpass to blink band
+        for i in range(X4.shape[0]):
+            X4[i] = bandpass_filter(X4[i], 0.1, 15.0, self.fs, order=4)
+
+        # Standardize per window
+        for i in range(X4.shape[0]):
+            X4[i] = standardize_per_window(X4[i])
+
+        self.X = X4.astype(np.float32)     # (N, 4, T)
         self.y = y.astype(np.int64)
 
     def __len__(self):
@@ -179,44 +225,44 @@ class DepthwiseSeparableConv1d(nn.Module):
         self.depth = nn.Conv1d(in_ch, in_ch, kernel_size=kernel_size, padding=padding,
                                dilation=dilation, groups=in_ch, bias=False)
         self.point = nn.Conv1d(in_ch, out_ch, kernel_size=1, bias=False)
-        self.gn = nn.GroupNorm(1, out_ch)
+        self.bn = nn.BatchNorm1d(out_ch)
         self.act = nn.GELU()
 
     def forward(self, x):
         x = self.depth(x)
         x = self.point(x)
-        x = self.gn(x)
+        x = self.bn(x)
         x = self.act(x)
         return x
 
 class TinyBlinkNet(nn.Module):
     """
-    Input: (B, C, T) with arbitrary channels (C>=1).
+    Input: (B, 4, T)  [Fp1, Fp2, diff, sum]
     Stack of temporal depthwise separable convs with increasing receptive field.
-    Global average pool over time → linear → n_classes.
+    Global average pool over time → linear → 3 classes.
     """
-    def __init__(self, n_classes: int = 3, n_in_ch: int = 4):
+    def __init__(self, n_classes: int = 3):
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv1d(n_in_ch, 16, kernel_size=11, padding=5, bias=False),
-            nn.GroupNorm(1, 16),
+            nn.Conv1d(4, 16, kernel_size=11, padding=5, bias=False),
+            nn.BatchNorm1d(16),
             nn.GELU(),
             nn.Dropout(0.1),
         )
         self.block1 = DepthwiseSeparableConv1d(16, 32, kernel_size=31, dilation=1)
         self.block2 = DepthwiseSeparableConv1d(32, 48, kernel_size=41, dilation=2)
         self.block3 = DepthwiseSeparableConv1d(48, 64, kernel_size=51, dilation=3)
-        self.head_gn = nn.GroupNorm(1, 64)
+        self.head_bn = nn.BatchNorm1d(64)
         self.head_act = nn.GELU()
         self.dropout = nn.Dropout(0.25)
         self.classifier = nn.Linear(64, n_classes)
 
-    def forward(self, x):               # x: (B, C, T)
+    def forward(self, x):               # x: (B, 4, T)
         x = self.stem(x)
         x = self.block1(x)
         x = self.block2(x)
         x = self.block3(x)
-        x = self.head_gn(x)
+        x = self.head_bn(x)
         x = self.head_act(x)
         x = x.mean(dim=-1)              # GAP over time -> (B, 64)
         x = self.dropout(x)
@@ -283,6 +329,8 @@ def main():
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--channels", type=str, default=None,
+                        help="Two channel indices to use, e.g., '4,5' or '3 4'. Accepts 1-based or 0-based; converted internally to 0-based.")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -292,26 +340,77 @@ def main():
     d = load_file(args.npz)  # expects fields: data (C,T), labels (list of (t_start_s, t_end_s, label_idx)), fs
     fs = float(d.fs)
     print(f"   fs={fs:.1f} Hz, seconds={d.data.shape[1]/fs:.1f}, chans={d.data.shape[0]}")
+    # Inspect raw label distribution before windowing
+    try:
+        raw_u, raw_c = np.unique(d.labels, return_counts=True)
+        print(f"   Raw labels: {raw_u.tolist()} counts: {raw_c.tolist()} (num_classes={int(raw_u.size)})")
+    except Exception as e:
+        print(f"   (unable to inspect raw labels: {e})")
 
-    # 2) Window the data (no pre-filter; per-window preprocessing will be applied)
-    cont = d.data.astype(np.float32)  # (C,T)
+    # 2) Window the filtered data
+    #    We’ll prefilter before windowing so edges are consistent
+    print("🔧 Bandpass 0.1–15 Hz on continuous...")
+    cont = bandpass_filter(d.data, 0.1, 15.0, fs, order=4).astype(np.float32)  # (C,T)
     print("🔪 Windowing...")
     X, y = window_stage(cont, d.labels, fs, window_s=args.window_s, hop_s=args.hop_s)  # X:(N, C, T), y:(N,)
     print(f"   Windows: {X.shape[0]}, shape={X.shape}")
 
-    # Restrict to Fp1/Fp2 channels using the same helper used in inference.
-    # If names are unavailable, select_fp_indices() falls back to (0,1).
+    # Inspect windowed label distribution and normalize to 0..K-1
     try:
-        ch_names = getattr(d, "chan_names", None)
-    except Exception:
-        ch_names = None
-    idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+        win_u, win_c = np.unique(y, return_counts=True)
+        print(f"   Windowed labels (pre-remap): {win_u.tolist()} counts: {win_c.tolist()} (num_classes={int(win_u.size)})")
+    except Exception as e:
+        print(f"   (unable to inspect windowed labels: {e})")
+
+    # Build remap LUT from original labels to 0..K-1
+    classes_original = np.array(sorted(np.unique(y)), dtype=np.int64)
+    class_map = {int(c): int(i) for i, c in enumerate(classes_original)}
+    if not np.array_equal(classes_original, np.arange(classes_original.size, dtype=np.int64)):
+        y = np.array([class_map[int(v)] for v in y], dtype=np.int64)
+        print(f"   Remapped labels to 0..{classes_original.size-1}; classes_original={classes_original.tolist()} map={class_map}")
+    else:
+        print("   Labels already 0-based consecutive; no remap needed.")
+
+    try:
+        win_u2, win_c2 = np.unique(y, return_counts=True)
+        print(f"   Windowed labels (post-remap): {win_u2.tolist()} counts: {win_c2.tolist()}")
+    except Exception as e:
+        print(f"   (unable to inspect remapped windowed labels: {e})")
+
+    # Choose two channels:
+    # Priority: --channels if provided; otherwise best-effort Fp1/Fp2 by name, else (0,1).
+    n_total_ch = int(d.data.shape[0])
+    idx_fp1, idx_fp2 = None, None
+
+    if args.channels:
+        try:
+            idx_fp1, idx_fp2 = parse_channel_list(args.channels, n_total_ch)
+            print(f"📌 Using --channels -> 0-based indices [{idx_fp1}, {idx_fp2}] out of {n_total_ch} total")
+        except Exception as e:
+            print(f"⚠️ Invalid --channels '{args.channels}': {e}. Falling back to Fp1/Fp2 selection.")
+
+    if idx_fp1 is None or idx_fp2 is None:
+        try:
+            ch_names = getattr(d, "chan_names", None)
+        except Exception:
+            ch_names = None
+        idx_fp1, idx_fp2 = select_fp_indices(ch_names)
+        print(f"📌 Selected Fp1/Fp2 indices by name or fallback -> [{idx_fp1}, {idx_fp2}]")
+
     X = X[:, [idx_fp1, idx_fp2], :]  # keep 2-ch
 
     # 3) Split
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=args.seed
     )
+    # Show split distributions
+    try:
+        tr_u, tr_c = np.unique(y_train, return_counts=True)
+        va_u, va_c = np.unique(y_val, return_counts=True)
+        print(f"   Train labels: {tr_u.tolist()} counts: {tr_c.tolist()}")
+        print(f"   Val   labels: {va_u.tolist()} counts: {va_c.tolist()}")
+    except Exception as e:
+        print(f"   (unable to inspect split label distributions: {e})")
 
     # 4) Datasets/Loaders
     tr_ds = BlinkWindows(X_train, y_train, fs=fs, train=True)
@@ -359,12 +458,13 @@ def main():
                 "window_s": float(args.window_s),
                 "hop_s": float(args.hop_s),
                 "bandpass": [0.1, 15.0, 4],
-                "classes": [int(c) for c in sorted(np.unique(y))],
+                "classes": [int(c) for c in sorted(np.unique(y))],  # post-remap classes (0..K-1)
+                "classes_original": [int(c) for c in classes_original.tolist()],
+                "class_map": {int(k): int(v) for k, v in class_map.items()},
+                "n_classes": int(n_classes),
                 "model": "TinyBlinkNet",
                 "timestamp": time.time(),
                 "seed": int(args.seed),
-                "fp_indices": [int(idx_fp1), int(idx_fp2)],
-                "chan_names": list(map(str, ch_names)) if ch_names is not None else None,
             },
         }
         torch.save(save_obj, "blinknet.pt")

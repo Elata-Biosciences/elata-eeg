@@ -31,19 +31,30 @@ async def start_data_ws(
     on_packet: PacketHandler,
 ) -> None:
     url = f"ws://{host}:9000/ws/data"
+    subs = list(subscriptions)  # ensure re-iterable across reconnects
     metadata: MetaMap = {}
 
-    async with websockets.connect(url, max_size=None) as ws:
-        for topic, epoch in subscriptions:
-            await ws.send(json.dumps({"type": "subscribe", "topic": topic, "epoch": epoch}))
+    backoff = 1.0
+    while True:
+        try:
+            print(f"[WS] Connecting to {url} ...")
+            async with websockets.connect(url, max_size=None) as ws:
+                print(f"[WS] Connected. Subscribing: {subs}")
+                for topic, epoch in subs:
+                    await ws.send(json.dumps({"type": "subscribe", "topic": topic, "epoch": epoch}))
 
-        async for message in ws:
-            kind, payload = ws_data_received(message, metadata)
-            if kind == "samples":
-                header, samples, meta = payload
-                result = on_packet(header, samples, meta)
-                if asyncio.iscoroutine(result):
-                    await result
+                backoff = 1.0  # reset backoff after successful connect
+                async for message in ws:
+                    kind, payload = ws_data_received(message, metadata)
+                    if kind == "samples":
+                        header, samples, meta = payload
+                        result = on_packet(header, samples, meta)
+                        if asyncio.iscoroutine(result):
+                            await result
+        except Exception as e:
+            print(f"[WS] connection error: {e}. Retrying in {backoff:.1f}s")
+            await asyncio.sleep(backoff)
+            backoff = min(10.0, backoff * 1.5)
 
 def ws_data_received(
     message: Union[str, bytes],
@@ -84,6 +95,7 @@ class SharedState:
     buffers: List[deque] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     last_meta: Optional[Dict[str, Any]] = None
+    selected_channels: Optional[List[int]] = None
 
     def ensure_buffers(self, num_channels: int, fs: float):
         with self.lock:
@@ -119,11 +131,22 @@ def extract_names(header: Dict[str, Any], meta: Optional[Dict[str, Any]], num_ch
     return names
 
 class LiveFFT:
-    def __init__(self, state: SharedState, topic: str, initial_channel: int = 0, fmax: Optional[float] = None):
+    def __init__(
+        self,
+        state: SharedState,
+        topic: str,
+        initial_channel: int = 0,
+        fmax: Optional[float] = None,
+        window_type: str = "hamming",
+    ):
         self.state = state
         self.topic = topic
         self.channel = initial_channel
         self.fmax = fmax
+        wt = (window_type or "hamming").strip().lower()
+        if wt == "hammond":
+            wt = "hamming"
+        self.window_type = wt
 
         self.fig, self.ax = plt.subplots(figsize=(8, 5))
         (self.line,) = self.ax.plot([], [], lw=1.5)
@@ -145,28 +168,70 @@ class LiveFFT:
         if len(x) < 8:
             return np.array([0.0, 1.0]), np.array([np.nan, np.nan])
 
+        # Detrend
         x = x - np.mean(x)
-        w = np.hanning(len(x))
+
+        # Convert to microvolts (from volts) so final units are µV²/Hz
+        x = x * 1e6
+
+        # Select window
+        n = len(x)
+        wt = self.window_type
+        if wt in ("hamming",):
+            w = np.hamming(n)
+        elif wt in ("hann", "hanning"):
+            w = np.hanning(n)
+        else:  # "rect", "boxcar", or any other -> rectangular
+            w = np.ones(n)
+
         xw = x * w
 
+        # FFT
         Y = np.fft.rfft(xw)
-        freqs = np.fft.rfftfreq(len(xw), d=1.0 / fs)
+        freqs = np.fft.rfftfreq(n, d=1.0 / fs)
 
-        # Power spectral density
-        P = (np.abs(Y) ** 2) / max(1, len(xw))
+        # Proper periodogram-based PSD estimate:
+        # Sxx = |Y|^2 / (fs * sum(w^2))
+        U = float(np.sum(w ** 2))
+        if U <= 0:
+            U = float(n)
+        Pxx = (np.abs(Y) ** 2) / (fs * U)
+
+        # One-sided correction (double non-DC/non-Nyquist bins)
+        if n % 2 == 0:
+            if Pxx.size > 2:
+                Pxx[1:-1] *= 2.0
+        else:
+            if Pxx.size > 1:
+                Pxx[1:] *= 2.0
+
+        # Log10 scale
         with np.errstate(divide="ignore"):
-            P = np.log10(P + 1e-20)
+            P_log = np.log10(Pxx + 1e-20)
 
-        return freqs, P
+        return freqs, P_log
 
     def update(self, _frame):
         with self.state.lock:
             fs = float(self.state.fs)
-            nch = self.state.num_channels
-            ch_names = self.state.chan_names or [f"ch{i+1}" for i in range(nch)]
-            if self.channel >= nch:
-                self.channel = 0
-            buf = np.array(self.state.buffers[self.channel], dtype=np.float64) if self.state.buffers else np.array([])
+
+            # Selected channels and names for display (selection is 0-based indices)
+            selected = self.state.selected_channels or list(range(self.state.num_channels))
+            all_names = self.state.chan_names or [f"ch{i+1}" for i in range(self.state.num_channels)]
+            ch_names = [all_names[i] if i < len(all_names) else f"ch{i+1}" for i in selected] if selected else all_names
+
+            # Buffers correspond 1:1 to selected channels (or 1 buffer while waiting)
+            buf_count = len(self.state.buffers) if self.state.buffers else 0
+            if buf_count == 0:
+                buf = np.array([])
+                visual_nch = 0
+                current_name = "n/a"
+            else:
+                if self.channel >= buf_count:
+                    self.channel = 0
+                buf = np.array(self.state.buffers[self.channel], dtype=np.float64)
+                visual_nch = buf_count
+                current_name = ch_names[self.channel] if self.channel < len(ch_names) else f"ch{self.channel+1}"
 
         freqs, P = self.compute_fft(buf, fs)
 
@@ -174,7 +239,11 @@ class LiveFFT:
         if self.fmax is not None:
             xmask = freqs <= self.fmax
 
-        self.line.set_data(freqs[xmask], P[xmask])
+        # Update line data (handle empty buffer gracefully)
+        if freqs.size > 0 and P.size > 0:
+            self.line.set_data(freqs[xmask], P[xmask])
+        else:
+            self.line.set_data([], [])
 
         if freqs.size > 1:
             xmax = (self.fmax if self.fmax is not None else freqs[-1])
@@ -186,7 +255,7 @@ class LiveFFT:
                     pad = 0.1 * (ymax - ymin)
                     self.ax.set_ylim(ymin - pad, ymax + pad)
 
-        title = f"Live FFT — {self.topic} | fs={fs:.2f} Hz | chan {self.channel+1}/{nch} ({ch_names[self.channel]})"
+        title = f"Live FFT — {self.topic} | fs={fs:.2f} Hz | chan {self.channel+1}/{max(1, visual_nch)} ({current_name}) | window={self.window_type}"
         self.ax.set_title(title)
         return self.line,
 
@@ -205,17 +274,27 @@ def run_ws_in_thread(host: str, topic: str, epoch: int, state: SharedState):
         names = extract_names(header, meta, num_channels)
 
         changed = (abs(fs_new - state.fs) > 1e-6) or (num_channels != state.num_channels) or (names != state.chan_names)
-        if changed:
-            state.fs = fs_new
-            state.num_channels = num_channels
-            state.chan_names = names
-            state.ensure_buffers(num_channels, fs_new)
+
+        # Determine selected channels (validate against current stream)
+        selected = state.selected_channels if state.selected_channels else list(range(num_channels))
+        selected = [i for i in selected if 0 <= i < num_channels]
+        if not selected:
+            selected = list(range(num_channels))
+
+        with state.lock:
+            if changed or (len(state.buffers) != len(selected)):
+                state.fs = fs_new
+                state.num_channels = num_channels
+                state.chan_names = names
+                state.selected_channels = selected
+                state.ensure_buffers(len(selected), fs_new)
 
         if samples.ndim == 1:
             samples = samples[:, None]
         with state.lock:
-            for ch in range(min(state.num_channels, samples.shape[1])):
-                state.buffers[ch].extend(samples[:, ch].tolist())
+            for i, ch_idx in enumerate(state.selected_channels or []):
+                if ch_idx < samples.shape[1]:
+                    state.buffers[i].extend(samples[:, ch_idx].tolist())
 
     async def ws_main():
         await start_data_ws(host, [(topic, epoch)], handle_packet)
@@ -240,28 +319,44 @@ def parse_args():
     ap.add_argument("--topic", default="eeg_voltage", help="Topic name")
     ap.add_argument("--epoch", type=int, default=1, help="Epoch number")
     ap.add_argument("--window", type=float, default=2.0, help="Rolling window length (s)")
-    ap.add_argument("--channel", type=int, default=0, help="Initial channel index (0-based)")
+    ap.add_argument("--channels", type=str, default="", help="Comma-separated 1-based channel indices to display (e.g., 1,2,3). Empty = all channels")
+    ap.add_argument("--channel", type=int, default=1, help="Initial channel index (1-based within selected set)")
+    ap.add_argument("--window_type", type=str, default="hamming", help="Window type: hamming | hann | rect (alias: 'hammond' -> hamming)")
     ap.add_argument("--fmax", type=float, default=60.0, help="Max frequency to display (Hz)")
     return ap.parse_args()
 
 def main():
     args = parse_args()
     state = SharedState(window_secs=args.window)
-    state.ensure_buffers(num_channels=1, fs=state.fs)
+
+    # Parse --channels (1-based) into 0-based indices
+    sel: List[int] = []
+    if isinstance(args.channels, str) and args.channels.strip():
+        for tok in args.channels.replace(",", " ").split():
+            try:
+                idx = int(tok) - 1
+                if idx >= 0:
+                    sel.append(idx)
+            except Exception:
+                pass
+    state.selected_channels = sel if sel else None
+    state.ensure_buffers(num_channels=(len(sel) if sel else 1), fs=state.fs)
 
     run_ws_in_thread(args.host, args.topic, args.epoch, state)
 
     plot = LiveFFT(
         state=state,
         topic=args.topic,
-        initial_channel=max(0, args.channel),
+        initial_channel=max(0, args.channel - 1),
         fmax=args.fmax,
+        window_type=args.window_type,
     )
     print(
         "Controls:\n"
         "  ← / j : previous channel\n"
         "  → / l : next channel\n"
-        f"  Window: {args.window}s | fmax: {args.fmax} Hz | power: log10(µV²/Hz)\n"
+        f"  Channels: {(','.join(str(i+1) for i in sel)) if sel else 'all'} | "
+        f"Window: {args.window}s | fmax: {args.fmax} Hz | power: log10(µV²/Hz) | window_type: {plot.window_type}\n"
     )
     plot.show()
 

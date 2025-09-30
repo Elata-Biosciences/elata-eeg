@@ -9,25 +9,18 @@ from collections import deque, Counter
 import numpy as np
 from ws_client import start_data_ws  # your websocket client
 
-# Dynamic labels: provided via --labels at runtime.
-# No static mapping here; we will capture class_names and build a label_map inside Recorder.
+LABELS = {"down": 0, "up": 1, "rest": 2}
+INV_LABELS = {v: k for k, v in LABELS.items()}
 
 def now_s() -> float:
     return time.time()
 
 def parse_labels(csv: str) -> List[str]:
-    """Parse a comma list into normalized, unique label names (order preserved)."""
-    names = [s.strip().lower() for s in str(csv).split(",") if s.strip()]
-    # de-duplicate while preserving order
-    seen = set()
-    out: List[str] = []
-    for n in names:
-        if n not in seen:
-            seen.add(n)
-            out.append(n)
-    if not out:
-        raise ValueError("--labels parsed to empty; provide at least one label, e.g. 'left,right,up,down'")
-    return out
+    names = [s.strip().lower() for s in csv.split(",") if s.strip()]
+    unknown = [n for n in names if n not in LABELS]
+    if unknown:
+        raise ValueError(f"Unknown labels: {unknown}. Allowed: {list(LABELS.keys())}")
+    return names
 
 def parse_chs(csv: Optional[str]) -> Optional[List[int]]:
     """
@@ -55,29 +48,21 @@ def parse_chs(csv: Optional[str]) -> Optional[List[int]]:
     return idxs_0
 
 class Recorder:
-    def __init__(self, class_names: List[str], label_shift_s: float, beep: bool):
-        # Label vocabulary (dynamic)
-        self.class_names: List[str] = [str(n).lower() for n in class_names]
-        self.label_map: Dict[str, int] = {name: i for i, name in enumerate(self.class_names)}
-
-        # Stream meta
+    def __init__(self, label_shift_s: float, beep: bool):
         self.fs: Optional[float] = None
         self.ch_names: Optional[List[str]] = None
         self.t0: float = now_s()
 
-        # Buffers
         self._data: List[np.ndarray] = []
         self._labels: List[np.ndarray] = []
         self._events: List[Tuple[float, int]] = []
         self._notes: List[Dict[str, Any]] = []
 
-        # Label state
-        self.current_label: int = 0  # default to first label in class_names
+        self.current_label: int = LABELS["rest"]
         self._label_shift_s: float = label_shift_s
         self._label_delay_samples: int = 0
         self._label_buffer: deque = deque()
 
-        # Stats/UX
         self._samples_total: int = 0
         self._sec_by_label = Counter()
         self._last_label_change = self.t0
@@ -102,10 +87,10 @@ class Recorder:
 
     def set_label(self, name: str):
         name = name.strip().lower()
-        if name not in self.label_map:
-            print(f"[record] Unknown label '{name}'. Use one of: {self.class_names}")
+        if name not in LABELS:
+            print(f"[record] Unknown label '{name}'. Use: {list(LABELS.keys())}")
             return
-        new_lbl = self.label_map[name]
+        new_lbl = LABELS[name]
         if new_lbl == self.current_label:
             print(f"[record] Label already '{name}'.")
             return
@@ -127,12 +112,11 @@ class Recorder:
 
     def status_line(self) -> str:
         elapsed = int(now_s() - self.t0)
-        secs = dict((self.class_names[k], int(v)) for k, v in self._sec_by_label.items())
+        secs = dict((INV_LABELS[k], int(v)) for k, v in self._sec_by_label.items())
         running = int(now_s() - self._last_label_change)
-        cur_name = self.class_names[self.current_label]
-        secs[cur_name] = secs.get(cur_name, 0) + running
+        secs[INV_LABELS[self.current_label]] = secs.get(INV_LABELS[self.current_label], 0) + running
         parts = [
-            f"label={cur_name.upper():>5}",
+            f"label={INV_LABELS[self.current_label].upper():>4}",
             f"elapsed={elapsed:>4}s",
         ]
         parts += [f"{k}:{v}s" for k, v in sorted(secs.items())]
@@ -184,7 +168,6 @@ class Recorder:
             labels=labels,
             fs=np.array(self.fs, dtype=np.float64),
             ch_names=np.array(self.ch_names, dtype=object),
-            class_names=np.array(self.class_names, dtype=object),
             t0=np.array(self.t0, dtype=np.float64),
             events=events,
             notes_json=np.array(notes_json),
@@ -216,8 +199,7 @@ async def stdin_reader():
 async def record_main(args):
     outp = pathlib.Path(args.out).expanduser().resolve()
     outp.parent.mkdir(parents=True, exist_ok=True)
-    class_names = parse_labels(args.labels)
-    rec = Recorder(class_names=class_names, label_shift_s=args.label_shift, beep=args.beep)
+    rec = Recorder(label_shift_s=args.label_shift, beep=args.beep)
 
     # Derive a single end_time used by EVERYTHING
     duration_min = (args.minutes if args.minutes is not None else (5.0 if args.cued else None))
@@ -294,7 +276,7 @@ async def record_main(args):
 
     cued_task = None
     if args.cued:
-        labels_cycle = class_names
+        labels_cycle = parse_labels(args.labels)
         if end_time is None:
             end_time = now_s() + 5.0 * 60.0
         print(f"[record] CUED MODE: labels={labels_cycle}, block={args.block}s, until {time.strftime('%H:%M:%S', time.localtime(end_time))}")
@@ -312,9 +294,8 @@ async def record_main(args):
             if not line:
                 continue
             line = line.strip()
-            name = line.lower()
-            if name in rec.label_map:
-                rec.set_label(name)
+            if line in ("up", "down", "rest"):
+                rec.set_label(line)
             elif line.startswith("mark "):
                 rec.add_note(line[5:].strip())
             elif line == "status":
@@ -347,8 +328,7 @@ def parse_args():
     ap.add_argument("--beep", action="store_true")
 
     ap.add_argument("--cued", action="store_true")
-    ap.add_argument("--labels", default="left,right,up,down",
-                    help="Comma list of labels to use/cycle (any names; order defines class indices). Example: 'left,right,up,down' or 'blink,rest'")
+    ap.add_argument("--labels", default="up,down,rest")
     ap.add_argument("--block", type=float, default=5.0)
 
     ap.add_argument("--stale-after", type=float, default=3.0)
