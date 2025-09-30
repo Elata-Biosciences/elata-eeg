@@ -20,7 +20,7 @@ if str(HERE) not in sys.path:
 
 # Import model and DSP helpers from gpt1.py and tools.py via gpt1
 try:
-    from gpt1 import TinyBlinkNet, bandpass_filter, standardize_per_window, load_file, window_stage
+    from gpt1 import TinyBlinkNet, bandpass_filter, standardize_per_window, load_file, window_stage, select_fp_indices
 except Exception as e:
     print(f"❌ Could not import from gpt1.py: {e}")
     print("Run from the repo root or set PYTHONPATH to include bci/scripts/models")
@@ -33,23 +33,22 @@ def prepare_windows(d, window_s=1.0, hop_s=0.25):
     # Select Fp1/Fp2
     try:
         ch_names = getattr(d, "chan_names", None)
-        if ch_names and isinstance(ch_names, (list, tuple)):
-            idx_fp1 = ch_names.index("Fp1") if "Fp1" in ch_names else 0
-            idx_fp2 = ch_names.index("Fp2") if "Fp2" in ch_names else 1
-        else:
-            idx_fp1, idx_fp2 = 0, 1
     except Exception:
-        idx_fp1, idx_fp2 = 0, 1
-    X = X[:, [idx_fp1, idx_fp2], :]
+        ch_names = None
+    i1, i2 = select_fp_indices(ch_names)
+    X = X[:, [i1, i2], :]
     # Expand to 4 channels per window
     fp1 = X[:, 0, :]
     fp2 = X[:, 1, :]
     diff = fp1 - fp2
     sumv = 0.5 * (fp1 + fp2)
     X4 = np.stack([fp1, fp2, diff, sumv], axis=1).astype(np.float32)
+    # Bandpass per window on 4-ch to match training
+    for i in range(X4.shape[0]):
+        X4[i] = bandpass_filter(X4[i], 0.1, 15.0, fs, order=4).astype(np.float32)
     # Standardize per window
     for i in range(X4.shape[0]):
-        X4[i] = standardize_per_window(X4[i])
+        X4[i] = standardize_per_window(X4[i]).astype(np.float32)
     return X4, y, fs
 
 def infer(args):
@@ -61,15 +60,23 @@ def infer(args):
     X4, y, fs = prepare_windows(d, args.window_s, args.hop_s)
 
     # Infer n_classes from checkpoint
-    state = torch.load(args.weights, map_location="cpu")
-    if "classifier.weight" in state:
-        n_classes = int(state["classifier.weight"].shape[0])
+    ckpt = torch.load(args.weights, map_location="cpu")
+    # Unwrap state_dict from saved object if needed
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
+        state_dict = ckpt["state_dict"]
+        meta = ckpt.get("meta", {})
     else:
-        n_classes = 3
+        state_dict = ckpt
+        meta = {}
+    # Infer classes
+    if isinstance(state_dict, dict) and "classifier.weight" in state_dict:
+        n_classes = int(state_dict["classifier.weight"].shape[0])
+    else:
+        n_classes = int(meta.get("n_classes", 3))
 
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     model = TinyBlinkNet(n_classes=n_classes).to(device)
-    model.load_state_dict(state)
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
 
     X_tensor = torch.from_numpy(X4).to(device)

@@ -10,12 +10,27 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple, Optional, Un
 import numpy as np
 import websockets
 
-async def _tcp_probe_ipv4(host: str, port: int):
-    infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
-    af, socktype, proto, _, sa = infos[0]
-    reader, writer = await asyncio.open_connection(host=sa[0], port=sa[1], family=af)
-    writer.close()
-    await writer.wait_closed()
+async def _tcp_probe(host: str, port: int, timeout: float = 2.0):
+    """
+    Try opening a TCP connection to host:port using any address family (IPv4/IPv6).
+    Returns on first success, raises last error if all attempts fail.
+    """
+    infos = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+    last_err: Optional[Exception] = None
+    for af, socktype, proto, _, sa in infos:
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host=sa[0], port=sa[1], family=af),
+                timeout=timeout,
+            )
+            writer.close()
+            await writer.wait_closed()
+            return
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
 
 MetaMap = Dict[str, Dict[str, Any]]
 PacketHandler = Callable[[Dict[str, Any], np.ndarray, Optional[Dict[str, Any]]], Awaitable[None]]
@@ -24,14 +39,44 @@ async def start_data_ws(
     host: str,
     subscriptions: Iterable[Tuple[str, int]],
     on_packet: PacketHandler,
+    port: int = 9000,
+    scheme: str = "ws",
+    probe: bool = True,
 ) -> None:
     """Connect to the data WebSocket, subscribe to topics, and dispatch packets."""
-    url = f"ws://{host}:9000/ws/data"
     metadata: MetaMap = {}
 
-    print("[ws_client] TCP probe:", host, 9000)
-    await _tcp_probe_ipv4(host, 9000)
-    print("[ws_client] TCP probe OK")
+    target_host = host
+    url = f"{scheme}://{target_host}:{port}/ws/data"
+
+    if probe:
+        print("[ws_client] TCP probe:", target_host, port)
+        try:
+            await _tcp_probe(target_host, port)
+            print("[ws_client] TCP probe OK")
+        except socket.gaierror as e:
+            print(f"[ws_client] DNS resolution failed for {target_host}:{port} -> {e}")
+            # Try sensible local fallbacks for typical mDNS hosts
+            fallbacks = []
+            if target_host in ("raspberrypi.local", "raspberrypi", "pi.local"):
+                fallbacks = ["localhost", "127.0.0.1"]
+            for fb in fallbacks:
+                print(f"[ws_client] Trying fallback host: {fb}:{port}")
+                try:
+                    await _tcp_probe(fb, port)
+                    target_host = fb
+                    print(f"[ws_client] Fallback probe OK -> using {target_host}:{port}")
+                    break
+                except Exception as ef:
+                    print(f"[ws_client] Fallback {fb} failed: {ef}")
+            if target_host == host:
+                # no fallback succeeded; re-raise original
+                raise
+        except OSError as e:
+            print(f"[ws_client] TCP probe error for {target_host}:{port} -> {e}")
+            raise
+
+    url = f"{scheme}://{target_host}:{port}/ws/data"
     print("[ws_client] connecting to:", url)
 
     async with websockets.connect(url, max_size=None) as ws:

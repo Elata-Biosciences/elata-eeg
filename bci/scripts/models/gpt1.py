@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_recall_fscore_support, classification_report
 import matplotlib.pyplot as plt
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, lfilter_zi
 import re
 
 # ----------------------------
@@ -112,36 +112,86 @@ def expand_to_4ch(fp1, fp2):
 
 def offline_prepare_X4(X2, fs):
     """
-    X2: (N, 2, T) → expands to (N, 4, T), bandpass 0.1–15 Hz, z-score per window (matches training).
+    X2: (N, 2, T) → expands to (N, 4, T) with two-pass bandpass (matches training order):
+      1) bandpass on 2-ch per window,
+      2) expand to 4-ch,
+      3) bandpass on 4-ch per window,
+      4) z-score per window.
     """
     assert X2.ndim == 3 and X2.shape[1] == 2, "Expected X shape (N, 2, T)"
     N = X2.shape[0]
-    fp1 = X2[:, 0, :]
-    fp2 = X2[:, 1, :]
-    diff = fp1 - fp2
-    sumv = 0.5 * (fp1 + fp2)
-    X4 = np.stack([fp1, fp2, diff, sumv], axis=1).astype(np.float32)  # (N,4,T)
-
-    # Bandpass + standardize per window
+    fs = float(fs)
+    X4 = np.zeros((N, 4, X2.shape[-1]), dtype=np.float32)
     for i in range(N):
-        X4[i] = bandpass_filter(X4[i], 0.1, 15.0, float(fs), order=4).astype(np.float32)
-        X4[i] = standardize_per_window(X4[i]).astype(np.float32)
+        # First pass: bandpass on 2-ch (approximates pre-window continuous filter)
+        ch2 = np.stack([X2[i, 0, :], X2[i, 1, :]], axis=0).astype(np.float32)
+        ch2 = bandpass_filter(ch2, 0.1, 15.0, fs, order=4).astype(np.float32)
+
+        # Expand to 4-ch features
+        fp1_i, fp2_i = ch2[0], ch2[1]
+        diff = fp1_i - fp2_i
+        sumv = 0.5 * (fp1_i + fp2_i)
+        x4 = np.stack([fp1_i, fp2_i, diff, sumv], axis=0).astype(np.float32)
+
+        # Second pass: bandpass on 4-ch per window
+        x4 = bandpass_filter(x4, 0.1, 15.0, fs, order=4).astype(np.float32)
+
+        # Standardize per window
+        x4 = standardize_per_window(x4).astype(np.float32)
+
+        X4[i] = x4
     return X4.astype(np.float32)
 
 
 def make_stream_transform(fs):
     """
-    Returns a callable transform(fp1, fp2) -> (4, T) float32 that:
-    - builds 4ch features,
-    - bandpasses to 0.1–15 Hz,
-    - standardizes per window.
+    Returns a callable transform(fp1, fp2) -> (4, T) float32 that matches training:
+      - First pass: continuous IIR bandpass on 2-ch with preserved filter state across calls
+      - Expand to 4-ch [Fp1, Fp2, diff, sum]
+      - Second pass: per-window IIR bandpass on 4-ch
+      - Standardize per window.
     """
     fs = float(fs)
+    # Precompute filter once; keep IIR state for the 2-ch continuous first pass
+    nyq = 0.5 * fs
+    lo = max(0.1 / nyq, 1e-6)
+    hi = min(15.0 / nyq, 0.999999)
+    b, a = butter(4, [lo, hi], btype="band")
+
+    # Persistent IIR state for each channel
+    zi_fp1 = None
+    zi_fp2 = None
+    initialized = False
+
     def _transform(fp1, fp2):
-        X4 = expand_to_4ch(fp1, fp2)
+        nonlocal zi_fp1, zi_fp2, initialized
+
+        # Ensure float32 arrays
+        fp1 = np.asarray(fp1, dtype=np.float32)
+        fp2 = np.asarray(fp2, dtype=np.float32)
+
+        # Initialize filter state on first call using first samples for steady-state
+        if not initialized:
+            base1 = float(fp1[0]) if fp1.size else 0.0
+            base2 = float(fp2[0]) if fp2.size else 0.0
+            zi_fp1 = (lfilter_zi(b, a) * base1).astype(np.float32)
+            zi_fp2 = (lfilter_zi(b, a) * base2).astype(np.float32)
+            initialized = True
+
+        # First pass: streaming IIR on the 2 raw channels with state carried across calls
+        y1, zi_fp1 = lfilter(b, a, fp1, zi=zi_fp1)
+        y2, zi_fp2 = lfilter(b, a, fp2, zi=zi_fp2)
+
+        # Expand to 4 channels from first-pass filtered signals
+        X4 = expand_to_4ch(y1, y2).astype(np.float32)
+
+        # Second pass: per-window bandpass on the 4-ch window
         X4 = bandpass_filter(X4, 0.1, 15.0, fs, order=4).astype(np.float32)
+
+        # Standardize per window
         X4 = standardize_per_window(X4).astype(np.float32)
         return X4
+
     return _transform
 
 

@@ -36,7 +36,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 # Import model/DSP helpers and websocket client
 try:
-    from gpt1 import TinyBlinkNet, bandpass_filter, standardize_per_window  # type: ignore
+    from gpt1 import TinyBlinkNet, bandpass_filter, standardize_per_window, parse_channel_list, make_stream_transform  # type: ignore
 except Exception as e:
     print(f"❌ Could not import TinyBlinkNet/DSP from gpt1.py: {e}")
     print("Ensure PYTHONPATH includes bci/scripts/models or run from repo root.")
@@ -92,6 +92,38 @@ def find_fp_indices(names: List[str]) -> Tuple[int, int]:
     return i1, i2
 
 
+def unwrap_state_dict(ckpt: Any) -> Dict[str, Any]:
+    """
+    Accepts torch.load() output and returns a clean state_dict suitable for model.load_state_dict().
+    Handles wrappers like {'state_dict': ..., 'meta': ...} and common prefixes: 'module.', 'model.'.
+    Also tries common alternative keys: 'model_state_dict', 'weights', 'params', 'model'.
+    """
+    from collections import OrderedDict
+
+    sd = ckpt
+    if isinstance(ckpt, dict):
+        # Preferred known keys
+        for key in ("state_dict", "model_state_dict", "weights", "params", "model"):
+            if key in ckpt and isinstance(ckpt[key], (dict, OrderedDict)):
+                sd = ckpt[key]
+                break
+        else:
+            # Heuristic: if exactly one nested dict looks like a state_dict, use it
+            nested = [v for v in ckpt.values() if isinstance(v, (dict, OrderedDict))]
+            if len(nested) == 1:
+                sd = nested[0]
+
+    # Strip known prefixes
+    cleaned = OrderedDict()
+    for k, v in (sd.items() if isinstance(sd, (dict, OrderedDict)) else []):
+        name = str(k)
+        if name.startswith("module."):
+            name = name[len("module."):]
+        if name.startswith("model."):
+            name = name[len("model."):]
+        cleaned[name] = v
+    return cleaned if cleaned else sd
+
 @dataclass
 class StreamState:
     device: torch.device
@@ -99,6 +131,9 @@ class StreamState:
     window_s: float = 1.0
     hop_s: float = 0.25
     smooth_k: int = 0  # rolling majority window over last K preds (0 disables)
+    # Optional user override for channel selection (parsed when num_ch known)
+    override_channels_text: Optional[str] = None
+    override_indices: Optional[Tuple[int, int]] = None
 
     # Runtime/updatable fields
     fs: float = 250.0
@@ -108,6 +143,8 @@ class StreamState:
     idx_fp2: int = 1
     window_len: int = 250
     hop_len: int = 62
+    # Preprocessing transform matching training (initialized when fs known)
+    transform: Any = None
     # Buffers store raw stream values
     buf_fp1: List[float] = field(default_factory=list)
     buf_fp2: List[float] = field(default_factory=list)
@@ -124,9 +161,25 @@ class StreamState:
             self.fs = float(fs_new)
             self.num_channels = int(num_ch)
             self.chan_names = names
-            self.idx_fp1, self.idx_fp2 = find_fp_indices(names)
+
+            # Parse --channels override once when num_ch is known
+            if self.override_indices is None and self.override_channels_text:
+                try:
+                    self.override_indices = parse_channel_list(self.override_channels_text, self.num_channels)
+                    print(f"[stream] Using --channels override -> indices {self.override_indices} of {self.num_channels} total")
+                except Exception as e:
+                    print(f"[stream] ⚠️ Invalid --channels '{self.override_channels_text}': {e}. Falling back to Fp1/Fp2 selection.")
+                    self.override_indices = None
+
+            if self.override_indices is not None:
+                self.idx_fp1, self.idx_fp2 = self.override_indices
+            else:
+                self.idx_fp1, self.idx_fp2 = find_fp_indices(names)
+
             self.window_len = max(1, int(round(self.window_s * self.fs)))
             self.hop_len = max(1, int(round(self.hop_s * self.fs)))
+            # Initialize two-pass preprocessing transform to match training
+            self.transform = make_stream_transform(self.fs)
             self.next_start = max(0, len(self.buf_fp1) - (len(self.buf_fp1) % self.hop_len))  # align to hop
             print(
                 f"[stream] fs={self.fs:.2f}Hz | chans={self.num_channels} {self.chan_names} "
@@ -170,14 +223,16 @@ class StreamState:
         return fp1, fp2
 
     def infer_window(self, fp1: np.ndarray, fp2: np.ndarray) -> Tuple[int, np.ndarray]:
-        # Build 4-channel window [Fp1, Fp2, diff, sum]
-        diff = fp1 - fp2
-        sumv = 0.5 * (fp1 + fp2)
-        X4 = np.stack([fp1, fp2, diff, sumv], axis=0).astype(np.float32)
-
-        # Bandpass and standardize as in training
-        X4 = bandpass_filter(X4, 0.1, 15.0, self.fs, order=4).astype(np.float32)
-        X4 = standardize_per_window(X4).astype(np.float32)
+        # Preprocess to 4-ch window using the same two-pass pipeline as training
+        if self.transform is not None:
+            X4 = self.transform(fp1, fp2).astype(np.float32)  # already bandpassed (2-ch then 4-ch) and standardized
+        else:
+            # Fallback: previous per-window-only pipeline
+            diff = fp1 - fp2
+            sumv = 0.5 * (fp1 + fp2)
+            X4 = np.stack([fp1, fp2, diff, sumv], axis=0).astype(np.float32)
+            X4 = bandpass_filter(X4, 0.1, 15.0, self.fs, order=4).astype(np.float32)
+            X4 = standardize_per_window(X4).astype(np.float32)
 
         xt = torch.from_numpy(X4[None, :, :]).to(self.device)  # (1,4,T)
         with torch.no_grad():
@@ -198,13 +253,22 @@ class StreamState:
 
 
 async def stream_infer(args):
-    # Load weights
-    state_dict = torch.load(args.weights, map_location="cpu")
-    n_classes = int(state_dict["classifier.weight"].shape[0]) if "classifier.weight" in state_dict else 3
+    # Load weights (robust to wrapped checkpoints and prefixed keys)
+    ckpt = torch.load(args.weights, map_location="cpu")
+    state_dict = unwrap_state_dict(ckpt)
+
+    # Infer number of classes if present; else fallback
+    n_classes = int(state_dict["classifier.weight"].shape[0]) if isinstance(state_dict, dict) and "classifier.weight" in state_dict else 3
 
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     model = TinyBlinkNet(n_classes=n_classes).to(device)
-    model.load_state_dict(state_dict)
+    # Load non-strict to handle classifier mismatches gracefully
+    res = model.load_state_dict(state_dict, strict=False) if isinstance(state_dict, dict) else None
+    if res is not None:
+        missing = list(getattr(res, "missing_keys", []))
+        unexpected = list(getattr(res, "unexpected_keys", []))
+        if missing or unexpected:
+            print(f"[weights] Loaded with missing={missing} unexpected={unexpected}")
     model.eval()
 
     state = StreamState(
@@ -213,6 +277,7 @@ async def stream_infer(args):
         window_s=float(args.window_s),
         hop_s=float(args.hop_s),
         smooth_k=int(args.smooth) if args.smooth and args.smooth > 0 else 0,
+        override_channels_text=args.channels,
     )
 
     last_print_ts = 0.0
@@ -265,6 +330,7 @@ def main():
     ap.add_argument("--weights", type=str, default="blinknet.pt", help="Path to model weights")
     ap.add_argument("--window_s", type=float, default=1.0, help="Window length (seconds)")
     ap.add_argument("--hop_s", type=float, default=0.25, help="Hop length (seconds)")
+    ap.add_argument("--channels", type=str, default=None, help="Two channel indices to use (e.g., '1 2' or '0,1'). Accepts 1-based unless any 0 present.")
     ap.add_argument("--device", type=str, default=None, help="cuda|cpu (auto if not set)")
     ap.add_argument("--smooth", type=int, default=0, help="Majority-vote window over last K preds (0=off)")
     args = ap.parse_args()
