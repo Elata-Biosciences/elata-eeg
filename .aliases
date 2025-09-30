@@ -4,3 +4,9 @@ PYTHONPATH=.
 # bash -lc "PYTHONPATH=. python3 bci/scripts/models/train.py --model mi_tongue --npz /tmp/mi_tongue_sim_demo.npz --chs 1,2 --window_s 1.0 --hop_s 0.25 --epochs 8 --batch 64 --lr 3e-3 --seed 1337 --save /tmp/mi_tongue_sim_demo.pt"
 # PYTHONPATH=. python3 bci/scripts/explore/cwt_live.py --host 172.20.10.12 --topic eeg_voltage --epoch 1 --nch 2 --grid-cols 2 --window 12 --fmin 1 --fmax 45 --zscore
 alias bci_record='python3 bci/scripts/gather_data/record_epochs.py --host 172.20.10.12 --topic eeg_voltage --epoch 1 --out bci/scripts/data/session.npz --labels "left,right,up,down" --cued --minutes 3 --block 4 --label-shift 0.6'
+
+alias bci_contact_check='python3 bci/scripts/explore/contact_check.py'
+
+#PYTHONPATH=. python3 bci/scripts/models/train.py --model mi_tongue --npz bci/scripts/data/session_emg_9-30-3-52-pm.npz --chs 1,5 --window_s 1.0 --hop_s 0.25 --epochs 12 --batch 64 --lr 3e-3 --save /tmp/emg_click.pt
+
+#PYTHONPATH=. python3 bci/scripts/gather_data/record_epochs.py  --host 172.20.10.12 --topic eeg_voltage --epoch 1 --out bci/scripts/data/session_emg_$(date +%Y%m%d_%H%M%S).npz --labels "left,right,rest" --cued --minutes 4  --block 3 --label-shift 0.4

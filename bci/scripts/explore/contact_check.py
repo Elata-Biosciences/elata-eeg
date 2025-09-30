@@ -78,6 +78,46 @@ def band_power(x: np.ndarray, fs: float, f_lo: float, f_hi: float) -> float:
     return float(np.mean(P[mask]))
 
 
+# Optional helpers: override names via CSV and drop ground/reference channels
+GROUND_TOKENS = {"fpz", "ground", "ref", "reference", "a1", "a2"}
+
+def parse_names_csv(csv: str, n_expected: int) -> List[str]:
+    names = [s.strip() for s in str(csv).split(",") if s.strip()]
+    if not names:
+        return [f"ch{i+1}" for i in range(n_expected)]
+    if len(names) != n_expected:
+        # pad or trim to match
+        if len(names) < n_expected:
+            names = names + [f"ch{i+1}" for i in range(len(names), n_expected)]
+        else:
+            names = names[:n_expected]
+    return names
+
+def drop_ground_channels(X: np.ndarray, names: List[str]) -> Tuple[np.ndarray, List[str]]:
+    if not names:
+        return X, names
+    keep_idx = [i for i, nm in enumerate(names) if str(nm).strip().lower() not in GROUND_TOKENS]
+    if len(keep_idx) == len(names) or len(keep_idx) == 0:
+        return X, names
+    X2 = X[keep_idx, :]
+    names2 = [names[i] for i in keep_idx]
+    return X2, names2
+
+def parse_chs_csv(csv: Optional[str]) -> Optional[List[int]]:
+    if not csv:
+        return None
+    parts = [s.strip() for s in str(csv).split(",") if s.strip()]
+    out: List[int] = []
+    seen = set()
+    for s in parts:
+        if s.isdigit():
+            idx1 = int(s)
+            if idx1 not in seen:
+                out.append(idx1 - 1)
+                seen.add(idx1)
+    return out or None
+
+
 def analyze_contact(data: np.ndarray, fs: float, names: List[str]) -> List[Dict[str, Any]]:
     C, T = data.shape
     results: List[Dict[str, Any]] = []
@@ -215,7 +255,7 @@ async def record_once(host: str, topic: str, epoch: int, duration: float) -> Tup
     got_names: List[str] = []
 
     async def on_packet(header: Dict[str, Any], samples: np.ndarray, meta: Optional[Dict[str, Any]]):
-        # fs and names
+        # Resolve sampling rate
         fs = None
         if meta is not None:
             for k in ("fs", "sample_rate", "sampling_rate", "sr", "hz"):
@@ -236,26 +276,31 @@ async def record_once(host: str, topic: str, epoch: int, duration: float) -> Tup
         if fs is None:
             fs = bufs.fs or 250.0
 
+        # Channel count
         n_ch = int(header.get("num_channels") or (samples.shape[1] if samples.ndim == 2 else 1))
 
-        # names
+        # Resolve channel names
         names = None
         for d in (meta or {}, header):
             for k in ("chan_names", "channels", "channel_names", "labels"):
                 if k in d and isinstance(d[k], (list, tuple)) and len(d[k]) == n_ch:
-                    names = [str(x) for x in d[k]]
+                    try:
+                        names = [str(x) for x in d[k]]
+                    except Exception:
+                        names = None
                     break
             if names:
                 break
         if names is None:
             names = [f"ch{i+1}" for i in range(n_ch)]
+        # Remember names for return
+        bufs.names = list(names)
 
+        # Buffering and stop condition
         if got_fs[0] is None:
             got_fs[0] = float(fs)
-        nonlocal_duration = duration
         bufs.ensure(n_ch=n_ch, fs=float(fs), max_seconds=float(duration) + 1.0)
         bufs.ingest(samples)
-        # stop condition based on sample count
         total_samples = max(len(d) for d in bufs.bufs) if bufs.bufs else 0
         if total_samples >= int(float(duration) * float(fs)):
             raise asyncio.CancelledError
@@ -301,6 +346,8 @@ def main():
     ap.add_argument("--epoch", type=int, default=1)
     ap.add_argument("--duration", type=float, default=12.0, help="Seconds to record before analyzing")
     ap.add_argument("--npz", default="", help="Optional offline .npz to analyze instead of live WS")
+    ap.add_argument("--names", default="", help="Comma-separated channel names to override (e.g., 'T8,O2,Oz,O1,T7,Fpz')")
+    ap.add_argument("--drop-ground", action="store_true", help="Drop obvious ground/reference channels like Fpz/A1/A2 from analysis")
     args = ap.parse_args()
 
     if args.npz:
@@ -321,6 +368,11 @@ def main():
             X = data.astype(np.float32)
         else:
             X = data.T.astype(np.float32)
+        # Optional name override and ground drop
+        if args.names:
+            ch_names = parse_names_csv(args.names, X.shape[0])
+        if args.drop_ground:
+            X, ch_names = drop_ground_channels(X, ch_names or [f"ch{i+1}" for i in range(X.shape[0])])
         res = analyze_contact(X, fs, ch_names)
         print_report(res)
         return
@@ -330,6 +382,11 @@ def main():
     if X.size == 0:
         print("No data collected.")
         return
+    # Optional name override and ground drop
+    if args.names:
+        names = parse_names_csv(args.names, X.shape[0])
+    if args.drop_ground:
+        X, names = drop_ground_channels(X, names or [f"ch{i+1}" for i in range(X.shape[0])])
     res = analyze_contact(X, fs, names)
     print_report(res)
 

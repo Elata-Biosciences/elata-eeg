@@ -273,7 +273,11 @@ export const EegDataProvider = ({ children }: EegDataProviderProps) => {
   useEffect(() => {
     console.log('[EegDataContext] Checking readiness - pipelineStatus:', pipelineStatus, 'config channels:', config?.channels?.length, 'dataReceived:', dataReceived);
     // In development, always attempt to connect so /debug works even if pipeline state is unclear
-    const shouldConnectNow = pipelineStatus === 'started' || process.env.NODE_ENV === 'development';
+    // Disable WS auto-connect on stimulus-only pages (e.g., /ssvep) or when ?ws=0 is set
+    const isSsvepPage = typeof window !== 'undefined' && window.location.pathname.startsWith('/ssvep');
+    const wsParam = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('ws') : null;
+    const wsDisabled = wsParam === '0';
+    const shouldConnectNow = (pipelineStatus === 'started' || process.env.NODE_ENV === 'development') && !(isSsvepPage || wsDisabled);
     if (shouldConnectNow) {
       setShouldConnect(true);
 

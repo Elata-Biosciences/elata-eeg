@@ -153,7 +153,9 @@ class ResilientWebSocket {
     };
 
     this.ws.onerror = (event) => {
-      console.error('WebSocket error:', event);
+      // Downgrade to warn to avoid Next.js dev overlay; event is often an opaque {}
+      const detail = (event as any)?.message || (event as any)?.reason || '';
+      console.warn('WebSocket warning:', this.url, detail);
       this.onerror?.(event);
     };
 
@@ -180,7 +182,7 @@ class ResilientWebSocket {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(data);
     } else {
-      console.error('WebSocket is not open. ReadyState:', this.ws?.readyState);
+      console.warn('WebSocket is not open. ReadyState:', this.ws?.readyState);
     }
   }
 
@@ -201,9 +203,14 @@ class ResilientWebSocket {
 let configWebSocketInstance: ResilientWebSocket;
 
 if (typeof window !== 'undefined') {
-  // Connect directly to the backend WebSocket
-  const wsUrl = 'ws://127.0.0.1:9000/ws/config';
-  configWebSocketInstance = new ResilientWebSocket(wsUrl);
+  const path = window.location?.pathname || '';
+  const params = new URLSearchParams(window.location?.search || '');
+  const wsParam = params.get('ws');
+  const disableWs = path.startsWith('/ssvep') || wsParam === '0';
+  if (!disableWs) {
+    const wsUrl = 'ws://127.0.0.1:9000/ws/config';
+    configWebSocketInstance = new ResilientWebSocket(wsUrl);
+  }
 }
 
 // @ts-ignore

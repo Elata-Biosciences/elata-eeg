@@ -151,14 +151,17 @@ class LiveFFT:
         if len(x) < 8:
             return np.array([0.0, 1.0]), np.array([np.nan, np.nan])
 
-        x = x - np.mean(x)
-        w = np.hanning(len(x))
-        xw = x * w
+        # Convert from Volts to microVolts before FFT
+        x_uv = x * 1e6
+
+        x_uv = x_uv - np.mean(x_uv)
+        w = np.hanning(len(x_uv))
+        xw = x_uv * w
 
         Y = np.fft.rfft(xw)
         freqs = np.fft.rfftfreq(len(xw), d=1.0 / fs)
 
-        # Power spectral density
+        # Power spectral density in µV²/Hz
         P = (np.abs(Y) ** 2) / max(1, len(xw))
         with np.errstate(divide="ignore"):
             P = np.log10(P + 1e-20)
