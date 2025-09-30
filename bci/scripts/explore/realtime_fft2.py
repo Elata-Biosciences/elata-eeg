@@ -119,14 +119,17 @@ def extract_names(header: Dict[str, Any], meta: Optional[Dict[str, Any]], num_ch
     return names
 
 class LiveFFT:
-    def __init__(self, state: SharedState, topic: str, initial_channel: int = 0, fmax: Optional[float] = None):
+    def __init__(self, state: SharedState, topic: str, initial_channel: int = 0, fmax: Optional[float] = None, plot_all: bool = True, first_n: Optional[int] = None):
         self.state = state
         self.topic = topic
         self.channel = initial_channel
         self.fmax = fmax
+        self.plot_all = bool(plot_all)
+        self.first_n = int(first_n) if first_n is not None else None
 
         self.fig, self.ax = plt.subplots(figsize=(8, 5))
-        (self.line,) = self.ax.plot([], [], lw=1.5)
+        # We'll create line objects lazily in update() so we can adapt to channel count
+        self.lines: List = []
         self.ax.set_xlabel("Frequency (Hz)")
         self.ax.set_ylabel("log10(µV²/Hz)")
         self.ax.set_title("Live FFT — connecting...")
@@ -136,6 +139,9 @@ class LiveFFT:
         self.ani = FuncAnimation(self.fig, self.update, interval=100, blit=False)
 
     def on_key(self, event):
+        # Channel navigation only matters in single-channel mode
+        if self.plot_all:
+            return
         if event.key in ("left", "j"):
             self.channel = (self.channel - 1) % max(1, self.state.num_channels)
         elif event.key in ("right", "l"):
@@ -159,36 +165,105 @@ class LiveFFT:
 
         return freqs, P
 
+    def _ensure_lines(self, n: int, labels: List[str]):
+        if len(self.lines) != n:
+            # Recreate lines and legend to match channel count
+            self.ax.cla()
+            self.ax.set_xlabel("Frequency (Hz)")
+            self.ax.set_ylabel("log10(µV²/Hz)")
+            self.ax.grid(True, which="both", linestyle="--", alpha=0.4)
+            self.lines = []
+            for i in range(n):
+                (ln,) = self.ax.plot([], [], lw=1.2, label=(labels[i] if i < len(labels) else f"ch{i+1}"))
+                self.lines.append(ln)
+            if n > 1:
+                self.ax.legend(loc="upper right", fontsize=8)
+
     def update(self, _frame):
         with self.state.lock:
             fs = float(self.state.fs)
-            nch = self.state.num_channels
-            ch_names = self.state.chan_names or [f"ch{i+1}" for i in range(nch)]
-            if self.channel >= nch:
+            nch_total = self.state.num_channels
+            ch_names = self.state.chan_names or [f"ch{i+1}" for i in range(nch_total)]
+            if self.channel >= nch_total:
                 self.channel = 0
-            buf = np.array(self.state.buffers[self.channel], dtype=np.float64) if self.state.buffers else np.array([])
+            
+            # Determine which channels to plot
+            sel_idxs = list(range(nch_total))
+            if self.first_n is not None and self.first_n > 0:
+                sel_idxs = list(range(min(nch_total, self.first_n)))
 
-        freqs, P = self.compute_fft(buf, fs)
+            bufs = [np.array(self.state.buffers[i], dtype=np.float64) if self.state.buffers and i < len(self.state.buffers) else np.array([]) for i in sel_idxs]
+            ch_names_sel = [ch_names[i] for i in sel_idxs]
 
-        xmask = np.ones_like(freqs, dtype=bool)
-        if self.fmax is not None:
-            xmask = freqs <= self.fmax
+        nch_sel = len(bufs)
 
-        self.line.set_data(freqs[xmask], P[xmask])
+        if self.plot_all and nch_sel > 0:
+            self._ensure_lines(nch_sel, ch_names_sel)
+            minlen = min((len(b) for b in bufs), default=0)
+            freqs = np.array([0.0, 1.0]); Ps: List[np.ndarray] = []
+            if minlen >= 8:
+                for i in range(nch_sel):
+                    f, P = self.compute_fft(bufs[i][-minlen:], fs)
+                    if i == 0:
+                        freqs = f
+                    Ps.append(P)
+            else:
+                Ps = [np.array([np.nan, np.nan]) for _ in range(nch_sel)]
 
-        if freqs.size > 1:
-            xmax = (self.fmax if self.fmax is not None else freqs[-1])
-            self.ax.set_xlim(0, max(1e-3, xmax))
-            if np.isfinite(P[xmask]).any():
-                ymin = np.nanmin(P[xmask])
-                ymax = np.nanmax(P[xmask])
-                if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
-                    pad = 0.1 * (ymax - ymin)
-                    self.ax.set_ylim(ymin - pad, ymax + pad)
+            xmask = np.ones_like(freqs, dtype=bool)
+            if self.fmax is not None:
+                xmask = freqs <= self.fmax
 
-        title = f"Live FFT — {self.topic} | fs={fs:.2f} Hz | chan {self.channel+1}/{nch} ({ch_names[self.channel]})"
-        self.ax.set_title(title)
-        return self.line,
+            for i in range(nch_sel):
+                self.lines[i].set_data(freqs[xmask], Ps[i][xmask] if Ps[i].shape == freqs.shape else Ps[i])
+
+            if freqs.size > 1:
+                xmax = (self.fmax if self.fmax is not None else freqs[-1])
+                self.ax.set_xlim(0, max(1e-3, xmax))
+                
+                arrays_to_concat: List[np.ndarray] = []
+                for p in Ps:
+                    arr = p[xmask] if p.shape == freqs.shape else p
+                    if np.isfinite(arr).any():
+                        arrays_to_concat.append(arr)
+                
+                if arrays_to_concat:
+                    concatP = np.concatenate(arrays_to_concat)
+                    if concatP.size > 0 and np.isfinite(concatP).any():
+                        ymin = np.nanmin(concatP)
+                        ymax = np.nanmax(concatP)
+                        if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
+                            pad = 0.1 * (ymax - ymin)
+                            self.ax.set_ylim(ymin - pad, ymax + pad)
+
+            sel_desc = ",".join(str(i+1) for i in sel_idxs)
+            title = f"Live FFT — {self.topic} | fs={fs:.2f} Hz | Selected ({nch_sel}/{nch_total}): [{sel_desc}]"
+            self.ax.set_title(title)
+            return tuple(self.lines)
+        else: # Single channel mode
+            self._ensure_lines(1, [ch_names[self.channel]])
+            buf = np.array(self.state.buffers[self.channel], dtype=np.float64) if self.state.buffers and self.channel < len(self.state.buffers) else np.array([])
+            freqs, P = self.compute_fft(buf, fs)
+
+            xmask = np.ones_like(freqs, dtype=bool)
+            if self.fmax is not None:
+                xmask = freqs <= self.fmax
+
+            self.lines[0].set_data(freqs[xmask], P[xmask])
+
+            if freqs.size > 1:
+                xmax = (self.fmax if self.fmax is not None else freqs[-1])
+                self.ax.set_xlim(0, max(1e-3, xmax))
+                if np.isfinite(P[xmask]).any():
+                    ymin = np.nanmin(P[xmask])
+                    ymax = np.nanmax(P[xmask])
+                    if np.isfinite(ymin) and np.isfinite(ymax) and ymin != ymax:
+                        pad = 0.1 * (ymax - ymin)
+                        self.ax.set_ylim(ymin - pad, ymax + pad)
+
+            title = f"Live FFT — {self.topic} | fs={fs:.2f} Hz | chan {self.channel+1}/{nch_total} ({ch_names[self.channel]})"
+            self.ax.set_title(title)
+            return tuple(self.lines)
 
     def show(self):
         plt.tight_layout()
@@ -240,8 +315,10 @@ def parse_args():
     ap.add_argument("--topic", default="eeg_voltage", help="Topic name")
     ap.add_argument("--epoch", type=int, default=1, help="Epoch number")
     ap.add_argument("--window", type=float, default=2.0, help="Rolling window length (s)")
-    ap.add_argument("--channel", type=int, default=0, help="Initial channel index (0-based)")
+    ap.add_argument("--channel", type=int, default=0, help="Initial channel index (0-based) for single view")
     ap.add_argument("--fmax", type=float, default=60.0, help="Max frequency to display (Hz)")
+    ap.add_argument("--single", action="store_true", help="Single-channel view (default shows all channels overlay)")
+    ap.add_argument("--first", type=int, default=8, help="Display the first N channels (1-based). Default: 8.")
     return ap.parse_args()
 
 def main():
@@ -256,12 +333,15 @@ def main():
         topic=args.topic,
         initial_channel=max(0, args.channel),
         fmax=args.fmax,
+        plot_all=(not args.single),
+        first_n=args.first,
     )
+    mode = "All channels overlay" if not args.single else "Single-channel"
     print(
         "Controls:\n"
-        "  ← / j : previous channel\n"
-        "  → / l : next channel\n"
-        f"  Window: {args.window}s | fmax: {args.fmax} Hz | power: log10(µV²/Hz)\n"
+        f"  ← / j : previous channel (in single-channel mode)\n"
+        f"  → / l : next channel (in single-channel mode)\n"
+        f"  Mode: {mode} | Window: {args.window}s | fmax: {args.fmax} Hz | power: log10(µV²/Hz)\n"
     )
     plot.show()
 
