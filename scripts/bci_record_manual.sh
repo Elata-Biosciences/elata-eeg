@@ -3,14 +3,14 @@
 # Usage:
 #   ./run bci_record_manual
 # Configure via environment variables if needed:
-#   HOST=ws://raspberrypi.local TOPIC=eeg_voltage EPOCH=1 \
+#   HOST=raspberrypi.local TOPIC=eeg_voltage EPOCH=1 \
 #   LABELS="left,right,up,down" LABEL_SHIFT=0.6 CHS="" BEEP=0 OUT="" \
 #   ./run bci_record_manual
 set -euo pipefail
 
 export PYTHONPATH="${PYTHONPATH:-}:${PWD}"
 
-HOST=${HOST:-ws://raspberrypi.local}
+HOST=${HOST:-raspberrypi.local}
 TOPIC=${TOPIC:-eeg_voltage}
 EPOCH=${EPOCH:-1}
 LABELS=${LABELS:-left,right,up,down}

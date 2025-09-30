@@ -3,7 +3,7 @@
 # Usage:
 #   ./run bci_record_cued
 # Configure via environment variables if needed:
-#   HOST=ws://raspberrypi.local TOPIC=eeg_voltage EPOCH=1 \
+#   HOST=raspberrypi.local TOPIC=eeg_voltage EPOCH=1 \
 #   LABELS="left,right,up,down" MINUTES=5 BLOCK=5 LABEL_SHIFT=0.6 \
 #   CHS="" BEEP=1 OUT="" \
 #   ./run bci_record_cued
@@ -11,7 +11,7 @@ set -euo pipefail
 
 export PYTHONPATH="${PYTHONPATH:-}:${PWD}"
 
-HOST=${HOST:-ws://raspberrypi.local}
+HOST=${HOST:-raspberrypi.local}
 TOPIC=${TOPIC:-eeg_voltage}
 EPOCH=${EPOCH:-1}
 LABELS=${LABELS:-left,right,up,down}

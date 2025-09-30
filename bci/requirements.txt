@@ -6,3 +6,6 @@ numpy
 matplotlib
 jupyterlab
 seaborn
+
+pywavelets
+websockets
