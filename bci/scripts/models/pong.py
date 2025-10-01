@@ -85,7 +85,7 @@ class GameController:
         self._connected = False
         self._last_emit_ts = 0.0
         self._min_period = 0.0 if cfg.rate_hz <= 0 else 1.0 / float(cfg.rate_hz)
-        self._paddle_y = 0.5  # for absolute mode, start centered
+        self._paddle_x = 0.5  # for absolute mode, start centered
 
         # Register simple handlers (optional)
         @self.sio.event(namespace=self.cfg.namespace)
@@ -124,8 +124,8 @@ class GameController:
             return
 
     async def connect(self):
-        # Force WebSocket transport and pre-connect to the /game namespace.
-        # IMPORTANT: Do not append '/game' to the BASE URL; keep URL as http://host:port and use namespace.
+        # Force WebSocket transport and pre-connect to the configured namespace (default: /relay).
+        # IMPORTANT: Do not append the namespace to base_url; pass namespaces=[ns] and use the namespace arg.
         await self.sio.connect(
             self.cfg.base_url,
             transports=["websocket"],
@@ -150,39 +150,45 @@ class GameController:
         return True
 
     async def emit_directional(self, direction: Optional[str]):
-        """Emit a directional step if allowed by rate limiter."""
-        if not self._connected or not direction or direction not in ("up", "down"):
+        """Emit a directional command or step if allowed by rate limiter."""
+        if not self._connected or not direction or direction not in ("left", "right"):
             return
         if not self._rate_ok():
             return
-        payload = {"roomId": self.cfg.room, "dir": direction}
-        # Include step only if positive; server defaults ~0.04 otherwise.
-        if self.cfg.step > 0:
-            payload["step"] = float(self.cfg.step)
+        # Relay namespace: forward a simple command payload (roomId not required)
+        if self.cfg.namespace == "/relay":
+            payload = {"command": direction}
+        else:
+            # Authoritative /game or other: legacy dir+step still supported
+            payload = {"roomId": self.cfg.room, "dir": direction}
+            if self.cfg.step > 0:
+                payload["step"] = float(self.cfg.step)
         try:
             await self.sio.emit("input", payload, namespace=self.cfg.namespace)
-            # print(f"[game] emit directional: {payload}")
         except Exception as e:
             print(f"[game] emit directional error: {e}")
 
     async def emit_absolute(self, direction: Optional[str]):
-        """Integrate direction into [0,1] paddleY and emit absolute position."""
+        """Integrate direction into [0,1] paddleX and emit absolute position."""
         if not self._connected or not direction:
             return
-        # Update local y
-        dy = float(self.cfg.step) if self.cfg.step > 0 else 0.04
-        if direction == "up":
-            self._paddle_y = max(0.0, self._paddle_y - dy)
-        elif direction == "down":
-            self._paddle_y = min(1.0, self._paddle_y + dy)
+        # Update local x
+        dx = float(self.cfg.step) if self.cfg.step > 0 else 0.04
+        if direction == "left":
+            self._paddle_x = max(0.0, self._paddle_x - dx)
+        elif direction == "right":
+            self._paddle_x = min(1.0, self._paddle_x + dx)
         else:
             return  # nothing to do
         if not self._rate_ok():
             return
-        payload = {"roomId": self.cfg.room, "paddleY": float(self._paddle_y)}
+        # Relay omits roomId; /game includes it
+        if self.cfg.namespace == "/relay":
+            payload = {"paddleX": float(self._paddle_x)}
+        else:
+            payload = {"roomId": self.cfg.room, "paddleX": float(self._paddle_x)}
         try:
             await self.sio.emit("input", payload, namespace=self.cfg.namespace)
-            # print(f"[game] emit absolute: {payload}")
         except Exception as e:
             print(f"[game] emit absolute error: {e}")
 
@@ -197,29 +203,35 @@ class GameController:
 
 def guess_class_mapping(meta: Dict[str, Any], n_classes: int) -> Dict[int, str]:
     """
-    Returns a mapping from class index to 'up'/'down'/None.
+    Returns a mapping from class index to 'left'/'right'/None for horizontal control.
     Heuristic:
-      - If meta['classes'] exists, map by substring match.
-      - Else assume index 1 = 'up', index 2 = 'down' for 3-class model [neutral, up, down].
+      - If meta['classes'] exists, map by substring match:
+          'left' -> 'left', 'right' -> 'right'
+          'up' -> 'left', 'down' -> 'right'  (vertical names remapped to horizontal)
+      - Else assume index 1 = 'left', index 2 = 'right' for 3-class model [neutral, left, right].
     """
     clmap: Dict[int, str] = {}
-    classes = []
+    classes: List[str] = []
     try:
         classes = [str(x).lower() for x in (meta.get("classes") or [])]
     except Exception:
         classes = []
     if classes:
         for i, name in enumerate(classes):
-            if "up" in name:
-                clmap[i] = "up"
+            if "left" in name:
+                clmap[i] = "left"
+            elif "right" in name:
+                clmap[i] = "right"
+            elif "up" in name:
+                clmap[i] = "left"
             elif "down" in name:
-                clmap[i] = "down"
+                clmap[i] = "right"
     if not clmap:
         # Fallback heuristic
         if n_classes >= 3:
-            clmap = {1: "up", 2: "down"}
+            clmap = {1: "left", 2: "right"}
         elif n_classes == 2:
-            clmap = {1: "down"}  # 0=up? This is ambiguous; users can override later if needed.
+            clmap = {1: "right"}  # 0=left? ambiguous; users can override later if needed.
     return clmap
 
 
@@ -305,7 +317,7 @@ async def run_stream_to_game(args):
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Stream EEG inference and control a Socket.IO Pong server")
+    ap = argparse.ArgumentParser(description="Stream EEG inference and control a Socket.IO Pong/Pongo relay or game server")
     ap.add_argument("--file", type=str, default=str(Path(__file__).resolve().parent / "gpt1.py"), help="Path to model pipeline file (e.g., gpt1.py)")
     ap.add_argument("--mode", type=str, choices=["stream"], default="stream", help="Inference mode (stream only)")
     ap.add_argument("--weights", type=str, default=str(Path(__file__).resolve().parents[1] / "blinknet.pt"), help="Path to model weights .pt")
@@ -323,12 +335,12 @@ def parse_args():
 
     # Game target
     ap.add_argument("--game_url", type=str, default="http://localhost:3000", help="Game server base URL")
-    ap.add_argument("--game_ns", type=str, default="/game", help="Socket.IO namespace")
+    ap.add_argument("--game_ns", type=str, default="/relay", help='Socket.IO namespace ("/relay" UI relay or "/game" authoritative)')
     ap.add_argument("--game_room", type=str, default="arena-1", help="Room ID")
     ap.add_argument("--game_name", type=str, default="EEG", help="Player name")
-    ap.add_argument("--game_mode", type=str, choices=["directional", "absolute"], default="directional", help="Control mode")
-    ap.add_argument("--game_step", type=float, default=0.05, help="Step for up/down or absolute integration")
-    ap.add_argument("--game_rate_hz", type=float, default=10.0, help="Max emit rate to the game server")
+    ap.add_argument("--game_mode", type=str, choices=["directional", "absolute"], default="absolute", help="Control mode ('directional' sends commands; 'absolute' emits paddleX)")
+    ap.add_argument("--game_step", type=float, default=0.05, help="Step for left/right or absolute integration")
+    ap.add_argument("--game_rate_hz", type=float, default=30.0, help="Max emit rate to the relay/game server")
 
     return ap.parse_args()
 
